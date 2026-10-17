@@ -2,6 +2,11 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.3.1
+
+- If macOS ever blocks Mac Cleaner from replacing itself during an update, the app now says so when it reopens and tells you which setting to allow (Privacy & Security → App Management). Before, it would quietly keep the old version.
+- The app's background engine now always stops when the app does, even after a force quit.
+
 ## 0.3.0
 
 - **Mac Cleaner is now a real Mac app**, with its own window, Dock icon and menu bar. No browser, no Terminal, nothing else to install (Python is built in).

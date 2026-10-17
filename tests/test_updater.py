@@ -141,11 +141,21 @@ class AppModeTests(Sandbox):
         proc.wait(timeout=30)
         self.assertEqual(updater._bundle_version(app), NEW)
         self.assertEqual(updater._app_previous_version(), "0.0.1")
+        self.assertIsNone(updater.last_update_problem())
 
         # Roll back: the previous bundle comes back, the new one becomes "previous".
         updater._swap_to(updater._previous_app()).wait(timeout=30)
         self.assertEqual(updater._bundle_version(app), "0.0.1")
         self.assertEqual(updater._app_previous_version(), NEW)
+
+    def test_failed_swap_keeps_old_app_and_explains(self):
+        app = self.make_installed_app("0.0.1")
+        staged = updater._stage_app(updater.latest_release())
+        shutil.rmtree(staged)  # the new bundle vanished: the second move fails
+        updater._swap_to(staged).wait(timeout=30)
+        self.assertEqual(updater._bundle_version(app), "0.0.1")
+        self.assertIn("App Management", updater.last_update_problem())
+        self.assertIsNone(updater.last_update_problem())  # shown once
 
     def test_install_latest_hands_over_to_relaunch(self):
         app = self.make_installed_app("0.0.1")

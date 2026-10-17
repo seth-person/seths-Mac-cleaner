@@ -37,6 +37,10 @@ and reopens itself on the new version. Your settings, scans and history stay put
 **Mac Cleaner → Check for Updates…** (or **Version · Updates**, bottom left) checks straight away
 and can **roll back** to the version before.
 
+If macOS blocks the update ("Mac Cleaner was prevented from modifying apps"), the app keeps the
+version you had and says so. Allow it under System Settings → Privacy & Security →
+**App Management**, then update again.
+
 Updates come from this private repository, so the app needs a read-only GitHub token once. If
 it doesn't have one, the Updates panel says so and has a box to paste it into:
 <https://github.com/settings/personal-access-tokens/new> → *Only select repositories* →

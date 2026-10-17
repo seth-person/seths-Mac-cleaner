@@ -173,7 +173,7 @@ def check(force: bool = False) -> dict:
         cleanup_legacy()
         prev = _app_previous_version()
         out = {"versions": [], "can_rollback": prev is not None, "previous": prev,
-               "blocked": _app_blocked(app_bundle())}
+               "blocked": _app_blocked(app_bundle()), "problem": _last_problem()}
     else:
         out = {"versions": installed_versions(), "blocked": None,
                "can_rollback": m == "legacy" and _previous_version() is not None,
@@ -422,21 +422,52 @@ def _stage_app(rel: dict) -> Path:
 
 SWAP_SCRIPT = r"""#!/bin/bash
 # Mac Cleaner updater: wait for the app to quit, swap bundles, reopen.
-pid="$1"; current="$2"; new="$3"; previous="$4"
+pid="$1"; current="$2"; new="$3"; previous="$4"; result="$5"
 for _ in $(seq 1 300); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
 mkdir -p "$(dirname "$previous")"
 hold="$previous.swap"
 rm -rf "$hold"
-if mv "$current" "$hold"; then
-  if mv "$new" "$current"; then
-    rm -rf "$previous"
-    mv "$hold" "$previous"
-  else
-    mv "$hold" "$current"
-  fi
+if ! err="$(mv "$current" "$hold" 2>&1)"; then
+  echo "failed: $err" > "$result"
+elif ! err="$(mv "$new" "$current" 2>&1)"; then
+  mv "$hold" "$current"
+  echo "failed: $err" > "$result"
+else
+  rm -rf "$previous"
+  mv "$hold" "$previous"
+  echo "ok" > "$result"
 fi
 open "$current"
 """
+
+
+def _result_file() -> Path:
+    return install_root() / "last-update.txt"
+
+
+_problem_seen = {}
+
+
+def _last_problem() -> str | None:
+    """last_update_problem(), but remembered for this run so every check shows it."""
+    if "msg" not in _problem_seen:
+        _problem_seen["msg"] = last_update_problem()
+    return _problem_seen["msg"]
+
+
+def last_update_problem() -> str | None:
+    """If the last swap failed (e.g. macOS blocked it), explain once, then forget."""
+    f = _result_file()
+    try:
+        text = f.read_text().strip()
+        f.unlink()
+    except OSError:
+        return None
+    if not text.startswith("failed"):
+        return None
+    return ("The last update couldn't replace the app, so Mac Cleaner kept the version you had. "
+            "macOS may have blocked it: open System Settings → Privacy & Security → App Management, "
+            "turn on Mac Cleaner, then try the update again. (" + text[len("failed: "):][:200] + ")")
 
 
 def _swap_to(new_app: Path):
@@ -447,7 +478,8 @@ def _swap_to(new_app: Path):
     log = open(config.home() / "Library" / "Logs" / "Mac Cleaner.log", "a") \
         if (config.home() / "Library" / "Logs").is_dir() else subprocess.DEVNULL
     return subprocess.Popen(["/bin/bash", str(script), str(_app_pid()), str(app_bundle()), str(new_app),
-                             str(_previous_app())], stdout=log, stderr=log, start_new_session=True)
+                             str(_previous_app()), str(_result_file())],
+                            stdout=log, stderr=log, start_new_session=True)
 
 
 def _app_pid() -> int:

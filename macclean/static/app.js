@@ -888,6 +888,10 @@ async function checkUpdate(force) {
   } catch (e) {
     UPDATE = { error: "Couldn't check for updates: " + e.message };
   }
+  if (UPDATE.problem && !checkUpdate.shownProblem) {
+    checkUpdate.shownProblem = true;
+    modal("The update didn't go through", h("p", {}, UPDATE.problem));
+  }
   const el = $("#update");
   if (UPDATE.mode === "app" && UPDATE.available) {
     el.replaceChildren(h("button", { class: "btn primary", onclick: showUpdate }, `Update to ${UPDATE.latest}`));
@@ -986,6 +990,7 @@ async function showAbout() {
     u.mode !== "app" && u.app_available ? h("div", { class: "note" }, "There's a standalone Mac app now. ",
       h("a", { href: "#", onclick: (e) => { e.preventDefault(); $("#modal").close(); showMigrate(); } }, "Get it")) : null,
     u.blocked ? h("div", { class: "warn" }, u.blocked) : null,
+    u.problem ? h("div", { class: "warn" }, u.problem) : null,
     u.error ? h("div", { class: "warn" }, u.error) : null,
     needsToken ? h("div", {},
       h("p", { class: "ink2" }, "Updates come from your private GitHub repository, so the app needs a read-only token. Create a fine-grained token at github.com → Settings → Developer settings → Personal access tokens, with access to only seths-Mac-cleaner and Contents: Read-only, and paste it here. It's stored in your Keychain."),
