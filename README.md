@@ -171,9 +171,9 @@ No rules are automatic by default. Turn them on only once the suggestions look r
 
 1. Bump `__version__` in `macclean/__init__.py`.
 2. Add a `## <version>` section to `CHANGELOG.md`. It becomes the notes shown in the app.
-3. Commit, then tag and push: `git tag v<version> && git push origin v<version>`.
+3. Commit and push to the default branch.
 
-The Release workflow runs the tests, checks the tag matches the version, builds
+When the version changes, the Release workflow runs the tests, builds
 `mac-cleaner-<version>.tar.gz` plus `SHA256SUMS`, and publishes a GitHub release. Installed apps
 pick it up on their next check.
 
