@@ -64,6 +64,12 @@ jobs:
           fi
           arch -x86_64 "$APP/Contents/Resources/python/bin/python3" -c "import platform, sqlite3; print('intel engine ok', platform.machine())" \
             || echo "Rosetta not available on this runner; skipped the Intel check"
+      - name: Installer (Terminal route) against the published release
+        run: |
+          MACCLEAN_APPS_DIR="$RUNNER_TEMP/apps" MACCLEAN_NO_LAUNCH=1 bash install.sh
+          ls "$RUNNER_TEMP/apps/Mac Cleaner.app/Contents/MacOS/MacCleaner"
+          codesign --verify --deep --strict "$RUNNER_TEMP/apps/Mac Cleaner.app"
+          MACCLEAN_APPS_DIR="$RUNNER_TEMP/apps" bash install.sh --uninstall
       - uses: actions/upload-artifact@v4
         with:
           name: mac-app

@@ -38,8 +38,14 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-json_get() {  # json_get <file> <js expression using r>; macOS has no Python by default
-  osascript -l JavaScript -e 'function run(a){var r=JSON.parse(a[0]);return eval(a[1])}' "$(cat "$1")" "$2"
+release_field() {  # release_field <release.json> tag|<asset name>  (macOS has no Python by default)
+  osascript -l JavaScript -e '
+    function run(a) {
+      var r = JSON.parse(a[0]);
+      if (a[1] === "tag") return r.tag_name.replace(/^v/, "");
+      var hit = r.assets.filter(function (x) { return x.name === a[1]; })[0];
+      return hit ? hit.url : "";
+    }' "$(cat "$1")" "$2"
 }
 
 if [ -n "${MACCLEAN_APP_ZIP:-}" ]; then
@@ -67,10 +73,11 @@ EOF
     [ "$status" = "200" ] || die "GitHub didn't accept that token (HTTP $status)."
     have security && security add-generic-password -U -s "$SERVICE" -a "$USER" -w "$token"
   fi
-  version="$(json_get "$tmp/release.json" 'r.tag_name.replace(/^v/,"")')"
+  version="$(release_field "$tmp/release.json" tag)"
   name="Mac-Cleaner-$version.zip"
-  url="$(json_get "$tmp/release.json" "r.assets.filter(function(x){return x.name=='$name'})[0].url")"
-  sums="$(json_get "$tmp/release.json" "r.assets.filter(function(x){return x.name=='SHA256SUMS'})[0].url")"
+  url="$(release_field "$tmp/release.json" "$name")"
+  sums="$(release_field "$tmp/release.json" SHA256SUMS)"
+  [ -n "$url" ] && [ -n "$sums" ] || die "The latest release ($version) has no app download yet."
   bold "Downloading Mac Cleaner $version…"
   curl -fsSL ${token:+-H "Authorization: Bearer $token"} -H "Accept: application/octet-stream" -o "$tmp/$name" "$url"
   curl -fsSL ${token:+-H "Authorization: Bearer $token"} -H "Accept: application/octet-stream" -o "$tmp/SHA256SUMS" "$sums"
