@@ -78,7 +78,7 @@ EOF
   url="$(release_field "$tmp/release.json" "$name")"
   sums="$(release_field "$tmp/release.json" SHA256SUMS)"
   [ -n "$url" ] && [ -n "$sums" ] || die "The latest release ($version) has no app download yet."
-  bold "Downloading Mac Cleaner $version…"
+  bold "Downloading Mac Cleaner ${version}…"
   curl -fsSL ${token:+-H "Authorization: Bearer $token"} -H "Accept: application/octet-stream" -o "$tmp/$name" "$url"
   curl -fsSL ${token:+-H "Authorization: Bearer $token"} -H "Accept: application/octet-stream" -o "$tmp/SHA256SUMS" "$sums"
   (cd "$tmp" && grep " $name\$" SHA256SUMS | shasum -a 256 -c - >/dev/null) || die "The download is corrupt (checksum mismatch)."
