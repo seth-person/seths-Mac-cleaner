@@ -32,20 +32,20 @@ jobs:
         run: |
           APP="build/Mac Cleaner.app"
           LOG="$HOME/Library/Logs/Mac Cleaner.log"
-          "$APP/Contents/MacOS/MacCleaner" &
+          MACCLEAN_VERBOSE=1 "$APP/Contents/MacOS/MacCleaner" &
           PID=$!
-          for i in $(seq 1 90); do grep -q "running at" "$LOG" 2>/dev/null && break; sleep 1; done
+          for i in $(seq 1 90); do grep -q "GET /api/overview" "$LOG" 2>/dev/null && break; sleep 1; done
           cat "$LOG"
           URL="$(grep -o 'http://127.0.0.1:[0-9]*/' "$LOG" | tail -1)"
           curl -fsS "${URL}api/status" | head -c 300; echo
           curl -fsS "${URL}" | grep -q "Mac Cleaner"
           sleep 4
           screencapture -x build/screenshot.png || echo "no screenshot"
-          if [ -f build/screenshot.png ]; then
-            # A small copy in the log, so the screen can be checked without downloading artifacts.
-            sips -Z 1100 -s format jpeg -s formatOptions 55 build/screenshot.png --out "$RUNNER_TEMP/shot.jpg" >/dev/null
-            echo "SCREENSHOT_B64 $(base64 -i "$RUNNER_TEMP/shot.jpg" | tr -d '\n')"
-          fi
+          # The window really showed the dashboard: its page, script and data calls hit the engine.
+          for path in "GET / " "GET /static/app.js" "GET /api/status" "GET /api/overview"; do
+            grep -q "\"$path" "$LOG" || { echo "::error::the window never requested $path"; exit 1; }
+          done
+          echo "window loaded the dashboard"
           kill "$PID"
           sleep 3
           if pgrep -f "Mac Cleaner.app/Contents/Resources/python" >/dev/null; then
