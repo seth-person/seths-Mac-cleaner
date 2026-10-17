@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,6 +155,11 @@ def sign(app: Path) -> str:
                 "-T", "/usr/bin/codesign")
             run("security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s",
                 "-k", pw, keychain, stdout=subprocess.DEVNULL)
+            # codesign only looks in keychains on the search list.
+            current = subprocess.run(["security", "list-keychains", "-d", "user"], capture_output=True,
+                                     text=True).stdout.split()
+            run("security", "list-keychains", "-d", "user", "-s", keychain,
+                *[c.strip('"') for c in current])
             out = subprocess.run(["security", "find-identity", "-p", "codesigning", str(keychain)],
                                  capture_output=True, text=True).stdout
             print(out)
@@ -198,7 +204,15 @@ def package(app: Path, out: Path, version: str) -> list:
         dmg = out / f"{stem}.dmg"
         if dmg.exists():
             dmg.unlink()
-        run("hdiutil", "create", "-volname", APP_NAME, "-srcfolder", stage, "-ov", "-format", "UDZO", dmg)
+        # hdiutil sometimes reports "Resource busy" on CI machines; it passes on retry.
+        for attempt in range(6):
+            try:
+                run("hdiutil", "create", "-volname", APP_NAME, "-srcfolder", stage, "-ov", "-format", "UDZO", dmg)
+                break
+            except subprocess.CalledProcessError:
+                if attempt == 5:
+                    raise
+                time.sleep(5)
     return [zip_path, dmg]
 
 
