@@ -2,6 +2,25 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.5.0
+
+Safer cleanup, reviewed in two rounds by an independent reviewer.
+
+- **"Safe" now only means safe:** rebuilt automatically, or an exact copy of something you keep. Installers, most app caches and `.asd` files are **Check first**.
+- **Ableton is better protected:** nothing a set uses is ever suggested, including samples inside projects, and Mac Cleaner checks again the moment you click. If some sets are only in iCloud and couldn't be read, it says so and hides audio duplicates rather than guessing.
+- **Installers from music-software makers** (Serum, FabFilter, Native Instruments, iZotope…) are filed in Plugin Installers instead of being suggested for the Trash. Old screenshots are filed in Pictures/Screenshots.
+- **Zips are only "already unzipped"** when every file in the folder is identical to the zip.
+- **Duplicates keep the organised copy** (iCloud, Projects). Catch-alls and Cleanup now agree. It warns you when trashing an iCloud copy would remove it from your other devices.
+- **Mac Cleaner won't move or trash app data folders**, Ableton's library, the main folders in iCloud Drive, or Photos and Music libraries, even from Explore.
+- **Clearer screens:**
+  - The Overview starts with what to do next.
+  - "Select N safe items (size)" shows what you're about to select.
+  - Confirmations explain each item.
+  - After trashing, it tells you the space comes back when you empty the Trash.
+  - Rules are plain sentences with on/off switches, and changes can be undone.
+- Cleaning up a folder's `.asd` files is now one action you can undo in one click, and they go to a visible folder in the Trash.
+- Saved settings now pick up improved default rules automatically.
+
 ## 0.4.1
 
 - Fixed the Terminal installer (`curl … | bash`), which failed on macOS with "Can't find variable: r".
