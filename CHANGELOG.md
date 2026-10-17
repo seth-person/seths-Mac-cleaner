@@ -2,6 +2,10 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.4.1
+
+- Fixed the Terminal installer (`curl … | bash`), which failed on macOS with "Can't find variable: r".
+
 ## 0.4.0
 
 - Mac Cleaner now has a new signing key. Updates are only installed if they're signed with it, so nobody else can push a fake update to your Mac.
