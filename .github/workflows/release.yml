@@ -1,0 +1,33 @@
+# Push a tag like v0.3.0 (matching macclean/__version__) to publish a release.
+# Installed copies of the app see it within a few hours, or right away via
+# About & updates -> Check now.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests
+        run: python -m unittest discover -s tests
+      - name: Tag must match the app version
+        run: |
+          v="$(python -c 'import macclean; print(macclean.__version__)')"
+          if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match macclean.__version__ ($v)"; exit 1
+          fi
+      - name: Build
+        run: python scripts/build_release.py dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/mac-cleaner-*.tar.gz dist/SHA256SUMS dist/install.sh \
+            --title "Mac Cleaner ${GITHUB_REF_NAME#v}" --notes-file dist/notes.md

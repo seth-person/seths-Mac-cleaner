@@ -191,7 +191,9 @@ function renderDisk() {
     h("div", { class: "bar", title: `${fmt.pct(d.used, d.total)} full` },
       h("span", { style: { width: fmt.pct(d.used, d.total) } })));
   const m = STATUS.meta;
-  $("#nav-foot").replaceChildren(m.scanned_at ? `Last scan ${m.scanned_at}` : "Not scanned yet");
+  $("#nav-foot").replaceChildren(
+    h("div", {}, m.scanned_at ? `Last scan ${m.scanned_at}` : "Not scanned yet"),
+    h("a", { href: "#", onclick: (e) => { e.preventDefault(); showAbout(); } }, `Version ${STATUS.version} · Updates`));
 }
 
 function renderScan() {
@@ -237,8 +239,8 @@ function noScan(root) {
     h("h2", {}, "No scan yet"),
     h("p", {}, "Press ", h("b", {}, "Scan now"), " (top right) to measure your home folder. Choose ",
       h("b", {}, "Entire disk"), " to include apps and macOS."),
-    h("p", { class: "ink2" }, "For the full picture, give the app that runs this (Terminal, or your Python) ",
-      h("b", {}, "Full Disk Access"), " in System Settings → Privacy & Security, then restart it.")));
+    h("p", { class: "ink2" }, "For the full picture, give ", h("b", {}, "Full Disk Access"),
+      " to Mac Cleaner (or to Terminal, if you run it from there) in System Settings → Privacy & Security, then quit and reopen it.")));
 }
 
 function tile(k, v, d, onclick) {
@@ -875,5 +877,98 @@ VIEWS.history = async (root) => {
       : h("div", { class: "card empty" }, "Nothing yet."));
 };
 
+// ----------------------------------------------------------------- updates
+let UPDATE = null;
+async function checkUpdate(force) {
+  try {
+    const r = await fetch("/api/update" + (force ? "?force=1" : ""));
+    UPDATE = await r.json();
+  } catch (e) {
+    UPDATE = { error: "Couldn't check for updates: " + e.message };
+  }
+  const el = $("#update");
+  el.replaceChildren(UPDATE.available
+    ? h("button", { class: "btn primary", onclick: showUpdate }, `Update to ${UPDATE.latest}`) : "");
+  return UPDATE;
+}
+
+function showUpdate() {
+  const u = UPDATE;
+  const body = h("div", {},
+    h("p", { class: "ink2" }, `You have ${u.current}. ${u.published_at ? "Released " + u.published_at.slice(0, 10) + "." : ""}`),
+    u.notes ? h("pre", { class: "survey" }, u.notes) : null,
+    u.installed ? h("p", { class: "ink2" }, "Mac Cleaner will restart; your settings, scans and history are kept. You can roll back from this panel if anything goes wrong.")
+      : h("div", { class: "warn" }, "This copy runs from source, not the installed app, so it can't update itself. Run install.sh once, or use git pull."));
+  modal(`Mac Cleaner ${u.latest} is available`, body, [
+    { label: "Later", value: false },
+    { label: "Update now", value: true, cls: "primary" },
+  ]).then((go) => { if (go && u.installed) applyUpdate("/api/update/install"); });
+}
+
+async function applyUpdate(endpoint) {
+  const msg = h("p", {}, "Downloading and checking the new version…");
+  $("#modal-body").replaceChildren(h("h2", {}, "Updating"), msg);
+  $("#modal").showModal();
+  let res;
+  try {
+    res = await post(endpoint);
+  } catch (e) {
+    res = { ok: false, error: e.message };
+  }
+  if (!res.ok) {
+    $("#modal").close();
+    return modal("Couldn't update", h("p", {}, res.error));
+  }
+  msg.textContent = `Installed ${res.to}. Restarting…`;
+  const deadline = Date.now() + 60000;
+  const poll = async () => {
+    try {
+      const s = await (await fetch("/api/status", { cache: "no-store" })).json();
+      if (s.version === res.to) return location.reload();
+    } catch (e) { /* server is restarting */ }
+    if (Date.now() > deadline) {
+      msg.textContent = "The update is installed but the app didn't come back. Quit and reopen Mac Cleaner.";
+      return;
+    }
+    setTimeout(poll, 700);
+  };
+  setTimeout(poll, 1000);
+}
+
+async function showAbout() {
+  const u = await checkUpdate(false);
+  const tokenIn = h("input", { type: "text", placeholder: "github_pat_…", style: { width: "100%" }, autocomplete: "off" });
+  const needsToken = u.error && /token/.test(u.error);
+  const body = h("div", { class: "stack" },
+    h("div", { class: "kv" },
+      h("span", { class: "muted" }, "Version"), h("span", {}, u.current, u.installed ? "" : " (running from source)"),
+      h("span", { class: "muted" }, "Latest release"), h("span", {}, u.latest || "—", u.checked_at ? h("span", { class: "muted" }, ` · checked ${u.checked_at}`) : ""),
+      u.versions && u.versions.length ? [h("span", { class: "muted" }, "Installed versions"), h("span", {}, u.versions.join(", "))] : null),
+    u.available ? h("div", { class: "note" }, `${u.latest} is available. `, h("a", { href: "#", onclick: (e) => { e.preventDefault(); $("#modal").close(); showUpdate(); } }, "See what's new"))
+      : !u.error ? h("p", { class: "ink2" }, "You're up to date.") : null,
+    u.error ? h("div", { class: "warn" }, u.error) : null,
+    needsToken ? h("div", {},
+      h("p", { class: "ink2" }, "Updates come from your private GitHub repository, so the app needs a read-only token. Create a fine-grained token at github.com → Settings → Developer settings → Personal access tokens, with access to only seths-Mac-cleaner and Contents: Read-only, and paste it here. It's stored in your Keychain."),
+      tokenIn) : null);
+  const buttons = [{ label: "Quit Mac Cleaner", value: "quit", cls: "danger" }];
+  if (u.can_rollback) buttons.push({ label: `Roll back to ${u.previous}`, value: "rollback" });
+  if (needsToken) buttons.push({ label: "Save token", value: "token" });
+  buttons.push({ label: "Check now", value: "check" }, { label: "Close", value: false, cls: "primary" });
+  const v = await modal("About & updates", body, buttons);
+  if (v === "check") { await checkUpdate(true); showAbout(); }
+  if (v === "token") {
+    const r = await post("/api/update/token", { token: tokenIn.value });
+    if (!r.ok) toast(r.error); else { toast("Token saved."); await checkUpdate(true); showAbout(); }
+  }
+  if (v === "rollback") applyUpdate("/api/update/rollback");
+  if (v === "quit") {
+    await post("/api/quit").catch(() => {});
+    document.body.replaceChildren(h("div", { class: "empty" }, h("h2", {}, "Mac Cleaner has quit"),
+      h("p", {}, "Open it again from your Applications folder.")));
+  }
+}
+
 // -------------------------------------------------------------------- boot
 refreshStatus().then(route);
+checkUpdate(false);
+setInterval(() => checkUpdate(false), 6 * 3600 * 1000);

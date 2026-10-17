@@ -8,23 +8,58 @@ It runs entirely on your Mac, needs nothing beyond the Python 3 that comes with 
 developer tools, and never deletes anything. "Trash" moves items to your Trash, and every
 action can be undone from the History tab.
 
-## Run it
+## Install
+
+In Terminal:
 
 ```bash
 git clone https://github.com/seth-person/seths-Mac-cleaner.git
 cd seths-Mac-cleaner
-python3 -m macclean            # opens http://127.0.0.1:8765
+./install.sh
 ```
 
-Or double-click **Mac Cleaner.command** in Finder.
+The installer:
 
-Then press **Scan now**. *Home folder* takes a minute or two; *Entire disk* also counts apps and
-macOS. If `python3` asks to install the command line developer tools, say yes.
+1. Checks for Python 3.9+. If it's missing, macOS offers to install Apple's Command Line Developer
+   Tools; run the installer again afterwards.
+2. Asks for a **GitHub token**, because the repository is private and the app needs permission to
+   download updates. Create one at <https://github.com/settings/personal-access-tokens/new>: set
+   *Repository access* to *Only select repositories* → `seths-Mac-cleaner`, and under *Permissions*
+   give *Contents: Read-only*. It's stored in your Keychain. You can skip this step and paste the
+   token into the app later.
+3. Puts **Mac Cleaner** in `~/Applications` and opens it. From then on, open it like any other app
+   (Spotlight: "Mac Cleaner"). The dashboard opens in your browser.
+
+You can delete the cloned folder once it's installed.
+
+### Updates
+
+When a new version is released, an **Update to x.y.z** button appears in the app's top bar. It
+shows what changed, then downloads the new version, checks it, switches over and restarts. Your
+settings, scans and history are kept. **Version · Updates** (bottom left) lets you check right
+away, roll back to the previous version, or quit the app.
+
+The app checks for updates every few hours. Behind the scenes, each version lives in
+`~/Library/Application Support/Mac Cleaner/versions/`, and an update only switches over once the
+new version has been downloaded, verified against its checksum, and shown to start.
+
+To uninstall: `~/Library/Application\ Support/Mac\ Cleaner/install.sh --uninstall`.
+Your data in `~/.macclean` is kept.
+
+### Running from source instead
+
+`python3 -m macclean` runs straight from a checkout (or double-click **Mac Cleaner.command**). That
+copy doesn't update itself; use `git pull`.
+
+### First scan
+
+Press **Scan now**. *Home folder* takes a minute or two; *Entire disk* also counts apps and macOS.
 
 **Full Disk Access:** macOS hides some folders (Mail, Messages, parts of ~/Library) from apps
-that don't have permission. To see everything, add Terminal under System Settings → Privacy &
-Security → Full Disk Access, then restart Terminal. The Overview tells you when folders were
-skipped.
+that don't have permission. To see everything, add Mac Cleaner under System Settings → Privacy &
+Security → Full Disk Access, then quit it from the Updates panel and reopen it. If folders are
+still skipped, add `/usr/bin/python3` too (press ⌘⇧G in the file picker to type the path). The
+Overview tells you when folders were skipped.
 
 ## What's in the dashboard
 
@@ -132,11 +167,22 @@ To run it every morning, save this as `~/Library/LaunchAgents/com.macclean.autos
 
 No rules are automatic by default. Turn them on only once the suggestions look right.
 
+## Releasing a new version
+
+1. Bump `__version__` in `macclean/__init__.py`.
+2. Add a `## <version>` section to `CHANGELOG.md`. It becomes the notes shown in the app.
+3. Commit, then tag and push: `git tag v<version> && git push origin v<version>`.
+
+The Release workflow runs the tests, checks the tag matches the version, builds
+`mac-cleaner-<version>.tar.gz` plus `SHA256SUMS`, and publishes a GitHub release. Installed apps
+pick it up on their next check.
+
 ## Other commands
 
 ```bash
 python3 -m macclean scan [folders…]   # scan from the terminal (use / for the whole disk)
 python3 -m macclean survey            # rewrite ~/.macclean/survey.md from the last scan
+python3 -m macclean update [--check]  # update the installed app from the terminal
 python3 -m unittest discover -s tests # run the tests
 python3 tests/fixture.py /tmp/demo && HOME=/tmp/demo python3 -m macclean   # try it on a fake messy home
 ```

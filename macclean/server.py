@@ -11,17 +11,19 @@ import os
 import secrets
 import subprocess
 import sys
-import time
+import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import ableton, actions, config, db, inbox, purge, survey
+from . import __version__, ableton, actions, config, db, inbox, purge, survey, updater
 from .scanner import BackgroundScan
 
 STATIC = Path(__file__).parent / "static"
 TOKEN = secrets.token_urlsafe(24)
 SCAN = BackgroundScan()
+HTTPD = None
 _TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
           ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
 
@@ -37,7 +39,8 @@ def api_status(q):
     du = shutil.disk_usage("/")
     return {"scan": SCAN.status(), "has_scan": bool(m), "meta": m,
             "disk": {"total": du.total, "used": du.used, "free": du.free},
-            "home": str(config.home()), "platform": sys.platform}
+            "home": str(config.home()), "platform": sys.platform,
+            "app": "macclean", "version": __version__, "installed": updater.running_from_install()}
 
 
 def api_overview(q):
@@ -133,6 +136,46 @@ def api_survey(q):
     return {"text": survey.build(con, cfg), "path": survey.write(con, cfg)}
 
 
+def api_update(q):
+    return updater.check(force=q.get("force", ["0"])[0] == "1")
+
+
+def _port():
+    return HTTPD.server_address[1] if HTTPD else 8765
+
+
+def post_update_install(body):
+    try:
+        res = updater.install_latest()
+    except updater.UpdateError as e:
+        return {"ok": False, "error": str(e)}
+    updater.restart_later(_port())
+    return {"ok": True, **res}
+
+
+def post_update_rollback(body):
+    try:
+        res = updater.rollback()
+    except updater.UpdateError as e:
+        return {"ok": False, "error": str(e)}
+    updater.restart_later(_port())
+    return {"ok": True, **res}
+
+
+def post_update_token(body):
+    try:
+        updater.save_token(body.get("token", ""))
+    except updater.UpdateError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "check": updater.check(force=True)}
+
+
+def post_quit(body):
+    if HTTPD:
+        threading.Thread(target=HTTPD.shutdown, daemon=True).start()
+    return {"ok": True}
+
+
 def post_scan(body):
     cfg = config.load_config()
     roots = body.get("roots") or None
@@ -185,9 +228,12 @@ def post_reveal(body):
 
 GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": api_tree,
        "/api/inbox": api_inbox, "/api/destinations": api_destinations, "/api/purge": api_purge, "/api/ableton": api_ableton,
-       "/api/config": api_config, "/api/history": api_history, "/api/survey": api_survey}
+       "/api/config": api_config, "/api/history": api_history, "/api/survey": api_survey,
+       "/api/update": api_update}
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
-        "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal}
+        "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal,
+        "/api/update/install": post_update_install, "/api/update/rollback": post_update_rollback,
+        "/api/update/token": post_update_token, "/api/quit": post_quit}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -248,14 +294,35 @@ def make_server(port: int = 8765) -> ThreadingHTTPServer:
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
+def _already_running(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=2) as r:
+            return json.loads(r.read()).get("app") == "macclean"
+    except (OSError, ValueError):
+        return False
+
+
 def serve(port: int = 8765, open_browser: bool = True) -> None:
-    httpd = make_server(port)
-    url = f"http://127.0.0.1:{httpd.server_address[1]}/"
-    print(f"macclean dashboard running at {url}  (Ctrl+C to stop)")
+    global HTTPD
+    url = f"http://127.0.0.1:{port}/"
+    try:
+        HTTPD = make_server(port)
+    except OSError:
+        if _already_running(port):  # opened the app again: just show the page
+            print(f"Mac Cleaner is already running at {url}")
+            if open_browser:
+                import webbrowser
+                webbrowser.open(url)
+            return
+        raise
+    url = f"http://127.0.0.1:{HTTPD.server_address[1]}/"
+    print(f"Mac Cleaner {__version__} running at {url}  (Ctrl+C to stop)", flush=True)
     if open_browser:
         import webbrowser
         webbrowser.open(url)
     try:
-        httpd.serve_forever()
+        HTTPD.serve_forever()
     except KeyboardInterrupt:
         print("\nbye")
+    finally:
+        HTTPD.server_close()
