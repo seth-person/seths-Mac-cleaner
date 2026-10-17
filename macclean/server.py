@@ -40,7 +40,7 @@ def api_status(q):
     return {"scan": SCAN.status(), "has_scan": bool(m), "meta": m,
             "disk": {"total": du.total, "used": du.used, "free": du.free},
             "home": str(config.home()), "platform": sys.platform,
-            "app": "macclean", "version": __version__, "installed": updater.running_from_install()}
+            "app": "macclean", "version": __version__, "mode": updater.mode()}
 
 
 def api_overview(q):
@@ -149,7 +149,7 @@ def post_update_install(body):
         res = updater.install_latest()
     except updater.UpdateError as e:
         return {"ok": False, "error": str(e)}
-    updater.restart_later(_port())
+    _after_update(res)
     return {"ok": True, **res}
 
 
@@ -158,7 +158,23 @@ def post_update_rollback(body):
         res = updater.rollback()
     except updater.UpdateError as e:
         return {"ok": False, "error": str(e)}
-    updater.restart_later(_port())
+    _after_update(res)
+    return {"ok": True, **res}
+
+
+def _after_update(res):
+    if res.get("relaunch"):
+        updater.exit_for_relaunch()  # the app quits; the swap script reopens it
+    else:
+        updater.restart_later(_port())
+
+
+def post_update_migrate(body):
+    try:
+        res = updater.migrate_to_app()
+    except updater.UpdateError as e:
+        return {"ok": False, "error": str(e)}
+    post_quit({})  # the new app takes over from here
     return {"ok": True, **res}
 
 
@@ -171,8 +187,12 @@ def post_update_token(body):
 
 
 def post_quit(body):
+    def stop():
+        import time
+        time.sleep(0.3)  # let this reply go out first
+        HTTPD.shutdown()
     if HTTPD:
-        threading.Thread(target=HTTPD.shutdown, daemon=True).start()
+        threading.Thread(target=stop, daemon=True).start()
     return {"ok": True}
 
 
@@ -233,7 +253,7 @@ GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": ap
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
         "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal,
         "/api/update/install": post_update_install, "/api/update/rollback": post_update_rollback,
-        "/api/update/token": post_update_token, "/api/quit": post_quit}
+        "/api/update/token": post_update_token, "/api/update/migrate": post_update_migrate, "/api/quit": post_quit}
 
 
 class Handler(BaseHTTPRequestHandler):

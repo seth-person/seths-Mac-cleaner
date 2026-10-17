@@ -878,6 +878,8 @@ VIEWS.history = async (root) => {
 };
 
 // ----------------------------------------------------------------- updates
+// Three ways this runs (UPDATE.mode): "app" (Mac Cleaner.app), "legacy" (the
+// old browser-based install) and "source" (a git checkout).
 let UPDATE = null;
 async function checkUpdate(force) {
   try {
@@ -887,22 +889,48 @@ async function checkUpdate(force) {
     UPDATE = { error: "Couldn't check for updates: " + e.message };
   }
   const el = $("#update");
-  el.replaceChildren(UPDATE.available
-    ? h("button", { class: "btn primary", onclick: showUpdate }, `Update to ${UPDATE.latest}`) : "");
+  if (UPDATE.mode === "app" && UPDATE.available) {
+    el.replaceChildren(h("button", { class: "btn primary", onclick: showUpdate }, `Update to ${UPDATE.latest}`));
+  } else if (UPDATE.mode && UPDATE.mode !== "app" && UPDATE.app_available) {
+    el.replaceChildren(h("button", { class: "btn primary", onclick: showMigrate }, "Get the Mac app"));
+  } else if (UPDATE.mode === "legacy" && UPDATE.available) {
+    el.replaceChildren(h("button", { class: "btn primary", onclick: showUpdate }, `Update to ${UPDATE.latest}`));
+  } else {
+    el.replaceChildren();
+  }
   return UPDATE;
+}
+
+function releaseNotes(u) {
+  return u.notes ? h("pre", { class: "survey" }, u.notes) : null;
 }
 
 function showUpdate() {
   const u = UPDATE;
+  if (u.mode === "source") return showMigrate();
   const body = h("div", {},
     h("p", { class: "ink2" }, `You have ${u.current}. ${u.published_at ? "Released " + u.published_at.slice(0, 10) + "." : ""}`),
-    u.notes ? h("pre", { class: "survey" }, u.notes) : null,
-    u.installed ? h("p", { class: "ink2" }, "Mac Cleaner will restart; your settings, scans and history are kept. You can roll back from this panel if anything goes wrong.")
-      : h("div", { class: "warn" }, "This copy runs from source, not the installed app, so it can't update itself. Run install.sh once, or use git pull."));
+    releaseNotes(u),
+    u.blocked ? h("div", { class: "warn" }, u.blocked)
+      : h("p", { class: "ink2" }, u.mode === "app"
+        ? "Mac Cleaner will close, update itself and reopen in a few seconds. Your settings, scans and history are kept, and you can roll back from Version · Updates."
+        : "Mac Cleaner will restart; your settings, scans and history are kept."));
   modal(`Mac Cleaner ${u.latest} is available`, body, [
     { label: "Later", value: false },
     { label: "Update now", value: true, cls: "primary" },
-  ]).then((go) => { if (go && u.installed) applyUpdate("/api/update/install"); });
+  ]).then((go) => { if (go && !u.blocked) applyUpdate("/api/update/install"); });
+}
+
+function showMigrate() {
+  const u = UPDATE;
+  const body = h("div", {},
+    h("p", {}, "Mac Cleaner is now a proper Mac app: its own window and Dock icon, no browser, no Terminal. Updates stay one click."),
+    h("p", { class: "ink2" }, "This installs it in your Applications folder and opens it. Your settings, scans and history carry over. This browser tab will stop working; you can close it."),
+    releaseNotes(u));
+  modal("Get the Mac app", body, [
+    { label: "Not now", value: false },
+    { label: "Install and open", value: true, cls: "primary" },
+  ]).then((go) => { if (go) applyUpdate("/api/update/migrate"); });
 }
 
 async function applyUpdate(endpoint) {
@@ -918,6 +946,14 @@ async function applyUpdate(endpoint) {
   if (!res.ok) {
     $("#modal").close();
     return modal("Couldn't update", h("p", {}, res.error));
+  }
+  if (endpoint.endsWith("migrate")) {
+    msg.textContent = `Mac Cleaner ${res.to} is installed in ${short(res.path).replace(/\/Mac Cleaner\.app$/, "")} and opening now. You can close this tab.`;
+    return;
+  }
+  if (res.relaunch) {
+    msg.textContent = `Installing ${res.to}. Mac Cleaner will reopen in a moment…`;
+    return;
   }
   msg.textContent = `Installed ${res.to}. Restarting…`;
   const deadline = Date.now() + 60000;
@@ -939,13 +975,17 @@ async function showAbout() {
   const u = await checkUpdate(false);
   const tokenIn = h("input", { type: "text", placeholder: "github_pat_…", style: { width: "100%" }, autocomplete: "off" });
   const needsToken = u.error && /token/.test(u.error);
+  const how = { app: "Mac app", legacy: "browser version", source: "running from source" }[u.mode] || "";
   const body = h("div", { class: "stack" },
     h("div", { class: "kv" },
-      h("span", { class: "muted" }, "Version"), h("span", {}, u.current, u.installed ? "" : " (running from source)"),
-      h("span", { class: "muted" }, "Latest release"), h("span", {}, u.latest || "—", u.checked_at ? h("span", { class: "muted" }, ` · checked ${u.checked_at}`) : ""),
-      u.versions && u.versions.length ? [h("span", { class: "muted" }, "Installed versions"), h("span", {}, u.versions.join(", "))] : null),
-    u.available ? h("div", { class: "note" }, `${u.latest} is available. `, h("a", { href: "#", onclick: (e) => { e.preventDefault(); $("#modal").close(); showUpdate(); } }, "See what's new"))
-      : !u.error ? h("p", { class: "ink2" }, "You're up to date.") : null,
+      h("span", { class: "muted" }, "Version"), h("span", {}, `${u.current}${how ? " · " + how : ""}`),
+      h("span", { class: "muted" }, "Latest release"), h("span", {}, u.latest || "—", u.checked_at ? h("span", { class: "muted" }, ` · checked ${u.checked_at}`) : "")),
+    u.available && u.mode === "app" ? h("div", { class: "note" }, `${u.latest} is available. `,
+      h("a", { href: "#", onclick: (e) => { e.preventDefault(); $("#modal").close(); showUpdate(); } }, "See what's new"))
+      : !u.error ? h("p", { class: "ink2" }, u.available ? `${u.latest} is available.` : "You're up to date.") : null,
+    u.mode !== "app" && u.app_available ? h("div", { class: "note" }, "There's a standalone Mac app now. ",
+      h("a", { href: "#", onclick: (e) => { e.preventDefault(); $("#modal").close(); showMigrate(); } }, "Get it")) : null,
+    u.blocked ? h("div", { class: "warn" }, u.blocked) : null,
     u.error ? h("div", { class: "warn" }, u.error) : null,
     needsToken ? h("div", {},
       h("p", { class: "ink2" }, "Updates come from your private GitHub repository, so the app needs a read-only token. Create a fine-grained token at github.com → Settings → Developer settings → Personal access tokens, with access to only seths-Mac-cleaner and Contents: Read-only, and paste it here. It's stored in your Keychain."),

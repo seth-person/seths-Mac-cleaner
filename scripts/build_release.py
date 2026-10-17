@@ -2,8 +2,9 @@
 
   python3 scripts/build_release.py [outdir]
 
-Produces mac-cleaner-<version>.tar.gz, SHA256SUMS, install.sh and notes.md
-(this version's section of CHANGELOG.md).
+Produces mac-cleaner-<version>.tar.gz (code only, for 0.2.0 browser-based
+installs to update from), SHA256SUMS (covering it and any app .zip/.dmg
+already in outdir), install.sh and notes.md (this version's CHANGELOG section).
 """
 import hashlib
 import re
@@ -42,8 +43,13 @@ def build(out: Path) -> Path:
     with tarfile.open(out / name, "w:gz") as tf:
         for item in INCLUDE:
             tf.add(ROOT / item, arcname=item, filter=clean)
-    digest = hashlib.sha256((out / name).read_bytes()).hexdigest()
-    (out / "SHA256SUMS").write_text(f"{digest}  {name}\n")
+    # One checksum file for everything the release ships (the app .zip/.dmg
+    # are built on macOS and dropped into `out` before this runs).
+    lines = []
+    for p in sorted(out.iterdir()):
+        if p.name.endswith((".tar.gz", ".zip", ".dmg")):
+            lines.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n")
+    (out / "SHA256SUMS").write_text("".join(lines))
     shutil.copy(ROOT / "install.sh", out / "install.sh")
     (out / "notes.md").write_text(notes(version))
     return out / name

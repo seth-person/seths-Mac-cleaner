@@ -1,7 +1,7 @@
 # Publishes a GitHub release whenever macclean/__version__ changes on the
 # default branch (and no release exists for that version yet). Installed
 # copies of the app see it within a few hours, or right away via
-# Version · Updates -> Check now. Can also be run by hand from the Actions tab.
+# Mac Cleaner -> Check for Updates. Can also be run by hand from the Actions tab.
 name: Release
 on:
   push:
@@ -10,16 +10,18 @@ on:
 permissions:
   contents: write
 jobs:
-  release:
+  plan:
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      exists: ${{ steps.v.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Version
-        id: v
+      - id: v
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -32,14 +34,34 @@ jobs:
       - name: Tests
         if: steps.v.outputs.exists != 'true'
         run: python -m unittest discover -s tests
+
+  app:
+    needs: plan
+    if: needs.plan.outputs.exists != 'true'
+    uses: ./.github/workflows/build-app.yml
+
+  publish:
+    needs: [plan, app]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-app
+          path: dist
       - name: Build
-        if: steps.v.outputs.exists != 'true'
-        run: python scripts/build_release.py dist
+        run: |
+          rm -f dist/screenshot.png
+          python scripts/build_release.py dist
+          cat dist/SHA256SUMS
       - name: Publish
-        if: steps.v.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          v="${{ steps.v.outputs.version }}"
-          gh release create "v$v" dist/mac-cleaner-*.tar.gz dist/SHA256SUMS dist/install.sh \
+          v="${{ needs.plan.outputs.version }}"
+          gh release create "v$v" dist/mac-cleaner-*.tar.gz dist/Mac-Cleaner-*.zip dist/Mac-Cleaner-*.dmg \
+            dist/SHA256SUMS dist/install.sh \
             --target "$GITHUB_SHA" --title "Mac Cleaner $v" --notes-file dist/notes.md

@@ -1,0 +1,52 @@
+# Builds Mac Cleaner.app on a macOS machine, launches it to make sure it
+# starts, and uploads the .zip (updates), .dmg (first install) and a screenshot.
+# Used by the Release workflow; also runs on its own when the app shell changes.
+name: Build Mac app
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    paths: ["macos/**", ".github/workflows/build-app.yml"]
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Python runtimes (Apple Silicon + Intel)
+        run: |
+          uv python install cpython-3.12.13-macos-aarch64-none cpython-3.12.13-macos-x86_64-none \
+            --install-dir "$RUNNER_TEMP/py"
+          ls "$RUNNER_TEMP/py"
+      - name: Build
+        run: |
+          python3 macos/build_app.py --out build \
+            --arm "$RUNNER_TEMP/py/cpython-3.12.13-macos-aarch64-none" \
+            --x86 "$RUNNER_TEMP/py/cpython-3.12.13-macos-x86_64-none"
+          du -sh "build/Mac Cleaner.app" build/*.zip build/*.dmg
+          lipo -info "build/Mac Cleaner.app/Contents/MacOS/MacCleaner" "build/Mac Cleaner.app/Contents/Resources/python/bin/python3.12"
+      - name: Launch it
+        run: |
+          APP="build/Mac Cleaner.app"
+          LOG="$HOME/Library/Logs/Mac Cleaner.log"
+          "$APP/Contents/MacOS/MacCleaner" &
+          PID=$!
+          for i in $(seq 1 90); do grep -q "running at" "$LOG" 2>/dev/null && break; sleep 1; done
+          cat "$LOG"
+          URL="$(grep -o 'http://127.0.0.1:[0-9]*/' "$LOG" | tail -1)"
+          curl -fsS "${URL}api/status" | head -c 300; echo
+          curl -fsS "${URL}" | grep -q "Mac Cleaner"
+          sleep 4
+          screencapture -x build/screenshot.png || echo "no screenshot"
+          kill "$PID"
+          arch -x86_64 "$APP/Contents/Resources/python/bin/python3" -c "import platform, sqlite3; print('intel engine ok', platform.machine())" \
+            || echo "Rosetta not available on this runner; skipped the Intel check"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: |
+            build/*.zip
+            build/*.dmg
+            build/screenshot.png
+          if-no-files-found: error
