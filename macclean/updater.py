@@ -49,6 +49,11 @@ KEYCHAIN_SERVICE = "Mac Cleaner GitHub"
 CHECK_EVERY = 6 * 3600
 KEEP_VERSIONS = 3
 APP_NAME = "Mac Cleaner.app"
+BUNDLE_ID = "com.seth-person.mac-cleaner"
+# The release signing certificate (macos/signing/mac-cleaner-signing.cert.pem).
+# Updates must be signed by it. Its private key exists only as an Actions secret.
+SIGNING_CERT_SHA1 = "87E3B0B19C279F3DA12D671B134BB640D124C9A6"
+SIGNATURE_REQUIREMENT = f'=identifier "{BUNDLE_ID}" and certificate leaf = H"{SIGNING_CERT_SHA1}"'
 APP_UPDATE_EXIT = 75  # tells the native shell "the updater is taking over; quit quietly"
 
 
@@ -406,6 +411,37 @@ def _check_staged_engine(app: Path, version: str) -> None:
                           + r.stderr.strip()[-300:])
 
 
+def signed_by_us(app: Path) -> bool | None:
+    """True/False on macOS; None where it can't be checked (no codesign)."""
+    if sys.platform != "darwin" or not shutil.which("codesign"):
+        return None
+    r = subprocess.run(["codesign", "--verify", "--deep", "--strict", "-R", SIGNATURE_REQUIREMENT, str(app)],
+                       capture_output=True, text=True, timeout=120)
+    return r.returncode == 0
+
+
+def _check_signature(app: Path) -> None:
+    if signed_by_us(app) is False:
+        raise UpdateError("The download isn't signed with Mac Cleaner's key, so it wasn't installed.")
+
+
+def reset_permissions_if_new_identity() -> bool:
+    """The first time an app signed with the current key runs, forget the
+    privacy permissions macOS gave earlier builds, so nothing signed with an
+    older (retired) key can inherit them. macOS asks again once."""
+    if sys.platform != "darwin" or mode() != "app" or not signed_by_us(app_bundle()):
+        return False
+    marker = config.app_dir() / "signing-identity"
+    try:
+        if marker.read_text().strip() == SIGNING_CERT_SHA1:
+            return False
+    except OSError:
+        pass
+    subprocess.run(["tccutil", "reset", "All", BUNDLE_ID], capture_output=True, timeout=30)
+    marker.write_text(SIGNING_CERT_SHA1 + "\n")
+    return True
+
+
 def _stage_app(rel: dict) -> Path:
     data = _download_verified(rel["app_zip"], rel["app_zip_name"], rel["sums"])
     staging = install_root() / "staging"
@@ -414,6 +450,7 @@ def _stage_app(rel: dict) -> Path:
     app = staging / rel["version"] / APP_NAME
     if _bundle_version(app) != rel["version"]:
         raise UpdateError("The downloaded app isn't the version it claims to be")
+    _check_signature(app)
     _check_staged_engine(app, rel["version"])
     if shutil.which("xattr"):
         subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(app)], capture_output=True)

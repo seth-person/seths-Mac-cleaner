@@ -351,6 +351,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
     print(f"Mac Cleaner {__version__} running at {url}  (Ctrl+C to stop)", flush=True)
     if os.environ.get("MACCLEAN_APP_BUNDLE"):
         _exit_with_parent()
+        threading.Thread(target=updater.reset_permissions_if_new_identity, daemon=True).start()
     if open_browser:
         import webbrowser
         webbrowser.open(url)

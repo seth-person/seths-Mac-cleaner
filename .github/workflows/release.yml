@@ -39,6 +39,10 @@ jobs:
     needs: plan
     if: needs.plan.outputs.exists != 'true'
     uses: ./.github/workflows/build-app.yml
+    with:
+      release: true
+    secrets:
+      MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
 
   publish:
     needs: [plan, app]

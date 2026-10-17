@@ -31,8 +31,10 @@ APP_NAME = "Mac Cleaner"
 BUNDLE_ID = "com.seth-person.mac-cleaner"
 EXECUTABLE = "MacCleaner"
 MIN_MACOS = "12.0"
-IDENTITY_P12 = ROOT / "macos" / "signing" / "mac-cleaner-signing.p12"
-IDENTITY_PASSWORD = "mac-cleaner"  # not a secret; see macos/signing/README.md
+# The signing key comes from the MACOS_SIGNING_P12_BASE64 Actions secret (see
+# macos/signing/README.md). Its certificate is pinned in macclean/updater.py.
+IDENTITY_ENV = "MACOS_SIGNING_P12_BASE64"
+IDENTITY_PASSWORD = os.environ.get("MACOS_SIGNING_P12_PASSWORD", "mac-cleaner")
 
 # Parts of the Python runtime the app never uses.
 PRUNE = [
@@ -138,21 +140,30 @@ def build_shell(macos_dir: Path) -> None:
         run("lipo", "-create", *outs, "-output", macos_dir / EXECUTABLE)
 
 
-def sign(app: Path) -> str:
+def sign(app: Path, require_identity: bool = False) -> str:
     """Sign with the project's self-signed identity so macOS keeps remembering
-    the app's permissions (Full Disk Access, folder access) across updates.
-    Falls back to an ad-hoc signature if that identity can't be used."""
+    the app's permissions (Full Disk Access, folder access) across updates, and
+    so the updater can tell a genuine build. Without the identity (e.g. a build
+    without the secret) it signs ad hoc, unless require_identity is set."""
     identity = "-"
     keychain = None
-    if IDENTITY_P12.exists():
-        keychain = Path(tempfile.mkdtemp()) / "mac-cleaner-build.keychain-db"
+    p12_b64 = os.environ.get(IDENTITY_ENV, "").strip()
+    if not p12_b64 and require_identity:
+        raise SystemExit(f"{IDENTITY_ENV} isn't set; refusing to publish an unsigned build")
+    if p12_b64:
+        import base64
+        tmpdir = Path(tempfile.mkdtemp())
+        p12 = tmpdir / "identity.p12"
+        p12.write_bytes(base64.b64decode(p12_b64))
+        keychain = tmpdir / "mac-cleaner-build.keychain-db"
         pw = "build"
         try:
             run("security", "create-keychain", "-p", pw, keychain)
             run("security", "set-keychain-settings", keychain)
             run("security", "unlock-keychain", "-p", pw, keychain)
-            run("security", "import", IDENTITY_P12, "-k", keychain, "-P", IDENTITY_PASSWORD,
+            run("security", "import", p12, "-k", keychain, "-P", IDENTITY_PASSWORD,
                 "-T", "/usr/bin/codesign")
+            p12.unlink()
             run("security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s",
                 "-k", pw, keychain, stdout=subprocess.DEVNULL)
             # codesign only looks in keychains on the search list.
@@ -167,6 +178,8 @@ def sign(app: Path) -> str:
             if hashes:
                 identity = hashes[0]
         except subprocess.CalledProcessError as e:
+            if require_identity:
+                raise
             print(f"warning: couldn't load the signing identity ({e}); signing ad hoc")
     extra = ["--keychain", str(keychain)] if keychain and identity != "-" else []
 
@@ -179,7 +192,7 @@ def sign(app: Path) -> str:
                 codesign(p)
         codesign(app)
     except subprocess.CalledProcessError:
-        if identity == "-":
+        if identity == "-" or require_identity:
             raise
         print("warning: signing with the project identity failed; signing ad hoc instead")
         identity, extra = "-", []
@@ -216,7 +229,7 @@ def package(app: Path, out: Path, version: str) -> list:
     return [zip_path, dmg]
 
 
-def build(arm: Path, x86: Path | None, out: Path, native: bool = True) -> Path:
+def build(arm: Path, x86: Path | None, out: Path, native: bool = True, require_identity: bool = False) -> Path:
     version = macclean.__version__
     out.mkdir(parents=True, exist_ok=True)
     app = out / f"{APP_NAME}.app"
@@ -245,7 +258,7 @@ def build(arm: Path, x86: Path | None, out: Path, native: bool = True) -> Path:
                          env=env, capture_output=True, text=True)
     if got.stdout.strip() != version:
         raise SystemExit(f"Bundled engine failed to start: {got.stderr}")
-    print("signed with:", sign(app))
+    print("signed with:", sign(app, require_identity))
     return app
 
 
@@ -255,8 +268,9 @@ def main() -> None:
     ap.add_argument("--x86", type=Path)
     ap.add_argument("--out", type=Path, default=ROOT / "build")
     ap.add_argument("--assemble-only", action="store_true")
+    ap.add_argument("--require-identity", action="store_true", help="fail rather than sign ad hoc")
     a = ap.parse_args()
-    app = build(a.arm, a.x86, a.out, native=not a.assemble_only)
+    app = build(a.arm, a.x86, a.out, native=not a.assemble_only, require_identity=a.require_identity)
     if not a.assemble_only:
         for p in package(app, a.out, macclean.__version__):
             print(p)
