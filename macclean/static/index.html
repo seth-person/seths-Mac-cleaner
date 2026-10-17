@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mac Cleaner</title>
+<link rel="stylesheet" href="/static/app.css">
+<script>window.MACCLEAN_TOKEN = "__TOKEN__";</script>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="brand">Mac Cleaner</div>
+    <nav id="nav">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#explore" data-view="explore">Explore</a>
+      <a href="#inbox" data-view="inbox">Catch-alls <span class="badge" id="badge-inbox"></span></a>
+      <a href="#cleanup" data-view="cleanup">Cleanup <span class="badge" id="badge-cleanup"></span></a>
+      <a href="#music" data-view="music">Music</a>
+      <a href="#rules" data-view="rules">Rules</a>
+      <a href="#history" data-view="history">History</a>
+    </nav>
+    <div class="nav-foot" id="nav-foot"></div>
+  </aside>
+  <div class="main">
+    <header class="top">
+      <div class="disk" id="disk"></div>
+      <div class="scan" id="scan"></div>
+    </header>
+    <main id="view"></main>
+  </div>
+</div>
+<div class="actionbar" id="actionbar" hidden></div>
+<div class="toast" id="toast" hidden></div>
+<div class="tooltip" id="tooltip" hidden></div>
+<dialog id="modal"><div id="modal-body"></div></dialog>
+<script src="/static/app.js"></script>
+</body>
+</html>
