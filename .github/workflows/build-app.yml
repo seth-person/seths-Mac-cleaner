@@ -26,6 +26,8 @@ jobs:
             --x86 "$RUNNER_TEMP/py/cpython-3.12.13-macos-x86_64-none"
           du -sh "build/Mac Cleaner.app" build/*.zip build/*.dmg
           lipo -info "build/Mac Cleaner.app/Contents/MacOS/MacCleaner" "build/Mac Cleaner.app/Contents/Resources/python/bin/python3.12"
+          codesign -dvv "build/Mac Cleaner.app" 2>&1 | grep -E "Identifier|Authority|Signature|TeamIdentifier"
+          codesign -dr - "build/Mac Cleaner.app" 2>&1 | tail -1
       - name: Launch it
         run: |
           APP="build/Mac Cleaner.app"
@@ -39,7 +41,16 @@ jobs:
           curl -fsS "${URL}" | grep -q "Mac Cleaner"
           sleep 4
           screencapture -x build/screenshot.png || echo "no screenshot"
+          if [ -f build/screenshot.png ]; then
+            # A small copy in the log, so the screen can be checked without downloading artifacts.
+            sips -Z 1100 -s format jpeg -s formatOptions 55 build/screenshot.png --out "$RUNNER_TEMP/shot.jpg" >/dev/null
+            echo "SCREENSHOT_B64 $(base64 -i "$RUNNER_TEMP/shot.jpg" | tr -d '\n')"
+          fi
           kill "$PID"
+          sleep 3
+          if pgrep -f "Mac Cleaner.app/Contents/Resources/python" >/dev/null; then
+            echo "::error::the engine kept running after the app was killed"; exit 1
+          fi
           arch -x86_64 "$APP/Contents/Resources/python/bin/python3" -c "import platform, sqlite3; print('intel engine ok', platform.machine())" \
             || echo "Rosetta not available on this runner; skipped the Intel check"
       - uses: actions/upload-artifact@v4

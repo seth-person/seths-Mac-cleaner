@@ -322,6 +322,18 @@ def _already_running(port: int) -> bool:
         return False
 
 
+def _exit_with_parent() -> None:
+    """Inside the Mac app: stop if the app goes away (crash, force quit)."""
+    parent = os.getppid()
+
+    def watch():
+        import time
+        while os.getppid() == parent:
+            time.sleep(2)
+        os._exit(0)
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def serve(port: int = 8765, open_browser: bool = True) -> None:
     global HTTPD
     url = f"http://127.0.0.1:{port}/"
@@ -337,6 +349,8 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         raise
     url = f"http://127.0.0.1:{HTTPD.server_address[1]}/"
     print(f"Mac Cleaner {__version__} running at {url}  (Ctrl+C to stop)", flush=True)
+    if os.environ.get("MACCLEAN_APP_BUNDLE"):
+        _exit_with_parent()
     if open_browser:
         import webbrowser
         webbrowser.open(url)
