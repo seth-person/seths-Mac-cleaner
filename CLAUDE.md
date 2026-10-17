@@ -1,6 +1,6 @@
 # Mac Cleaner
 
-Stdlib-only Python (must stay compatible with Python 3.9, macOS's /usr/bin/python3) plus a vanilla JS dashboard in `macclean/static/`. No third-party dependencies.
+Stdlib-only Python plus a vanilla JS dashboard in `macclean/static/`, shipped as a macOS app: `macos/MacCleaner.swift` (a native WebKit window) runs the engine using a Python runtime bundled by `macos/build_app.py`. No third-party Python dependencies. Keep the engine compatible with Python 3.9: older browser-based installs run on macOS's /usr/bin/python3 and update via the code tarball.
 
 - Tests: `python3 -m unittest discover -s tests`
 - Try it on fake data: `python3 tests/fixture.py /tmp/demo && HOME=/tmp/demo python3 -m macclean`
@@ -11,6 +11,8 @@ Every user-facing change ships as a release, so the user gets it through the app
 
 1. Bump `__version__` in `macclean/__init__.py` (semver).
 2. Add a `## <version>` section at the top of `CHANGELOG.md`, written for the user. It's shown in the app's update dialog.
-3. Commit and push to the default branch. `.github/workflows/release.yml` sees the version change, then tests, tags, builds and publishes `v<version>`. Check that the workflow passed. Tag pushes aren't needed (and are blocked from cloud sessions).
+3. Commit and push to the default branch. `.github/workflows/release.yml` sees the version change, runs the tests, builds and launch-tests the app on macOS (`build-app.yml`), then tags and publishes `v<version>`. Check that the workflow passed. Tag pushes aren't needed (and are blocked from cloud sessions).
+
+Changes to `macos/` trigger `build-app.yml` by itself. Get that green before bumping the version. The build can't be tested locally (Linux), and its artifact has a screenshot of the launched app.
 
 Never publish a release whose tests fail. The updater refuses a build that fails to import, but don't rely on that.

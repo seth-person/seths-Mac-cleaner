@@ -1,65 +1,61 @@
 # Mac Cleaner
 
-A local dashboard for keeping a Mac tidy. It shows where your disk space goes, sorts out
-the catch-all folders (Downloads, Desktop), finds safe things to delete, and keeps your Ableton
-projects in one place without breaking them.
+A Mac app for keeping a Mac tidy. It shows where your disk space goes, sorts out the catch-all
+folders (Downloads, Desktop), finds safe things to delete, and keeps your Ableton projects in one
+place without breaking them.
 
-It runs entirely on your Mac, needs nothing beyond the Python 3 that comes with macOS
-developer tools, and never deletes anything. "Trash" moves items to your Trash, and every
-action can be undone from the History tab.
+It runs entirely on your Mac and never deletes anything. "Trash" moves items to your Trash, and
+every action can be undone from the History tab.
 
 ## Install
 
-In Terminal:
+**Already using the browser version (0.2.x)?** Click **Update** in it, then **Get the Mac app**.
+That installs the app into Applications, opens it, and removes the old launcher. Your settings,
+scans and history carry over, and macOS won't show any security prompts.
 
-```bash
-git clone https://github.com/seth-person/seths-Mac-cleaner.git
-cd seths-Mac-cleaner
-./install.sh
-```
+**New install:**
 
-The installer:
+1. Open the [latest release](https://github.com/seth-person/seths-Mac-cleaner/releases/latest)
+   (you need to be signed in to GitHub) and download **Mac-Cleaner-x.y.z.dmg**.
+2. Open the .dmg and drag **Mac Cleaner** onto **Applications**.
+3. Open Mac Cleaner. The first time, macOS says it can't verify the developer, because the app
+   isn't registered with Apple (that costs $99/year). Click **Done**, then go to
+   System Settings → Privacy & Security, scroll down, and click **Open Anyway** next to
+   Mac Cleaner. This happens only once; updates never ask again.
 
-1. Checks for Python 3.9+. If it's missing, macOS offers to install Apple's Command Line Developer
-   Tools; run the installer again afterwards.
-2. Asks for a **GitHub token**, because the repository is private and the app needs permission to
-   download updates. Create one at <https://github.com/settings/personal-access-tokens/new>: set
-   *Repository access* to *Only select repositories* → `seths-Mac-cleaner`, and under *Permissions*
-   give *Contents: Read-only*. It's stored in your Keychain. You can skip this step and paste the
-   token into the app later.
-3. Puts **Mac Cleaner** in `~/Applications` and opens it. From then on, open it like any other app
-   (Spotlight: "Mac Cleaner"). The dashboard opens in your browser.
+Prefer Terminal? `./install.sh` from a clone of this repo installs the same app and skips the
+step-3 warning.
 
-You can delete the cloned folder once it's installed.
+The app has everything it needs built in (including its own Python), and it runs on Apple
+Silicon and Intel Macs with macOS 12 or later.
 
 ### Updates
 
-When a new version is released, an **Update to x.y.z** button appears in the app's top bar. It
-shows what changed, then downloads the new version, checks it, switches over and restarts. Your
-settings, scans and history are kept. **Version · Updates** (bottom left) lets you check right
-away, roll back to the previous version, or quit the app.
+When a new version is out, an **Update to x.y.z** button appears in the top bar. Click it and
+Mac Cleaner downloads the new version, checks it isn't corrupted and that it starts, then closes
+and reopens itself on the new version. Your settings, scans and history stay put.
+**Mac Cleaner → Check for Updates…** (or **Version · Updates**, bottom left) checks straight away
+and can **roll back** to the version before.
 
-The app checks for updates every few hours. Behind the scenes, each version lives in
-`~/Library/Application Support/Mac Cleaner/versions/`, and an update only switches over once the
-new version has been downloaded, verified against its checksum, and shown to start.
-
-To uninstall: `~/Library/Application\ Support/Mac\ Cleaner/install.sh --uninstall`.
-Your data in `~/.macclean` is kept.
-
-### Running from source instead
-
-`python3 -m macclean` runs straight from a checkout (or double-click **Mac Cleaner.command**). That
-copy doesn't update itself; use `git pull`.
+Updates come from this private repository, so the app needs a read-only GitHub token once. If
+it doesn't have one, the Updates panel says so and has a box to paste it into:
+<https://github.com/settings/personal-access-tokens/new> → *Only select repositories* →
+`seths-Mac-cleaner` → *Contents: Read-only*. It's stored in your Keychain. (If the repository
+were public, no token would be needed.)
 
 ### First scan
 
 Press **Scan now**. *Home folder* takes a minute or two; *Entire disk* also counts apps and macOS.
+macOS asks once whether Mac Cleaner may access Desktop, Documents and Downloads. Say **Allow**.
 
-**Full Disk Access:** macOS hides some folders (Mail, Messages, parts of ~/Library) from apps
-that don't have permission. To see everything, add Mac Cleaner under System Settings → Privacy &
-Security → Full Disk Access, then quit it from the Updates panel and reopen it. If folders are
-still skipped, add `/usr/bin/python3` too (press ⌘⇧G in the file picker to type the path). The
-Overview tells you when folders were skipped.
+For the complete picture, give it **Full Disk Access**: System Settings → Privacy & Security →
+Full Disk Access → **+** → Mac Cleaner, then quit and reopen it. Every version is signed with the
+same identity (see `macos/signing/`), so macOS remembers these permissions across updates.
+
+### Running from source
+
+`python3 -m macclean` runs the same dashboard from a checkout, in your browser. That copy
+doesn't update itself. The Updates panel offers to install the app instead.
 
 ## What's in the dashboard
 
@@ -173,23 +169,32 @@ No rules are automatic by default. Turn them on only once the suggestions look r
 2. Add a `## <version>` section to `CHANGELOG.md`. It becomes the notes shown in the app.
 3. Commit and push to the default branch.
 
-When the version changes, the Release workflow runs the tests, builds
-`mac-cleaner-<version>.tar.gz` plus `SHA256SUMS`, and publishes a GitHub release. Installed apps
-pick it up on their next check.
+When the version changes, the Release workflow runs the tests, builds the app on a macOS machine
+(`macos/build_app.py`: Swift shell + bundled universal Python + signing), launches it to make
+sure it starts, then publishes the `.dmg` (first install), `.zip` (in-app updates), a code
+tarball (for 0.2.x browser installs to update from), and `SHA256SUMS`. Installed apps pick it up
+on their next check.
+
+The app is a small native window (`macos/MacCleaner.swift`, WebKit) around the same Python
+engine and dashboard. To build it yourself on a Mac:
+
+```bash
+uv python install cpython-3.12.13-macos-aarch64-none cpython-3.12.13-macos-x86_64-none --install-dir /tmp/py
+python3 macos/build_app.py --arm /tmp/py/cpython-3.12.13-macos-aarch64-none --x86 /tmp/py/cpython-3.12.13-macos-x86_64-none
+```
 
 ## Other commands
 
 ```bash
 python3 -m macclean scan [folders…]   # scan from the terminal (use / for the whole disk)
 python3 -m macclean survey            # rewrite ~/.macclean/survey.md from the last scan
-python3 -m macclean update [--check]  # update the installed app from the terminal
 python3 -m unittest discover -s tests # run the tests
 python3 tests/fixture.py /tmp/demo && HOME=/tmp/demo python3 -m macclean   # try it on a fake messy home
 ```
 
 ## Safety
 
-- The server only listens on 127.0.0.1. Any request that changes files needs a token generated
+- The app's engine only listens on 127.0.0.1. Any request that changes files needs a token generated
   each time it starts, so other websites can't trigger actions.
 - Only files inside your home folder can be moved or trashed. Top-level folders (Desktop,
   Downloads, iCloud Drive, ~/Library and so on) can't be moved at all.
