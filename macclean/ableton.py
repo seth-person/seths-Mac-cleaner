@@ -100,6 +100,7 @@ def check_set(path: str, project_dir: str | None) -> dict:
     counts = {"in_project": 0, "packs": 0, "external": 0, "missing": 0}
     examples = {"external": [], "missing": []}
     external = []
+    used = []  # every file that resolved, wherever it is
     seen = set()
     for ref in parsed["refs"]:
         key = (ref["path"], ref["rel"])
@@ -115,6 +116,8 @@ def check_set(path: str, project_dir: str | None) -> dict:
         found = next((c for c in candidates if os.path.exists(c)), None)
         shown = ref["path"] or ref["rel"]
         is_pack = bool(ref["pack"]) or any(m in shown for m in _PACK_MARKERS)
+        if found:
+            used.append(found)
         if found and _inside(found, base):
             counts["in_project"] += 1
         elif is_pack:
@@ -129,7 +132,7 @@ def check_set(path: str, project_dir: str | None) -> dict:
             if len(examples["missing"]) < 8:
                 examples["missing"].append(shown)
     return {"version": parsed["version"], "refs": len(seen), **counts, "examples": examples,
-            "external_paths": external}
+            "external_paths": external, "used_paths": used}
 
 
 def _project_for(path: str, projects: set) -> str | None:
@@ -163,7 +166,7 @@ def analyse_sets(con, cfg, cancel=None, state=None) -> None:
             res = check_set(path, project)
             rows.append((path, project, res["version"], res["refs"], res["in_project"], res["packs"],
                          res["external"], res["missing"], json.dumps(res["examples"]), None))
-            ref_rows.extend((path, os.path.normpath(e)) for e in res["external_paths"])
+            ref_rows.extend((path, os.path.normpath(e)) for e in res["used_paths"])
         except Exception as e:  # corrupt/unreadable sets shouldn't stop the scan
             rows.append((path, project, "", 0, 0, 0, 0, 0, "{}", f"Couldn't read: {e}"))
         if state is not None:

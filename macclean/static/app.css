@@ -201,3 +201,10 @@ details > summary { cursor: pointer; color: var(--ink-2); }
   .explore, .cols-2 { grid-template-columns: 1fr; }
   #view { padding: 14px 16px 120px; }
 }
+
+.hero { margin-bottom: 14px; display: grid; gap: 10px; }
+.hero .lead { font-size: 16px; margin: 0; line-height: 1.5; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: -4px 0 12px; font-size: 12px; }
+.legend-row .muted { flex-basis: 100%; }
+table.rules td { padding: 8px 6px; }
+table.rules tr.off td { opacity: .55; }

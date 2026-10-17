@@ -63,6 +63,7 @@ let HOME = "";
 const short = (p) => (p && HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p || "");
 const ICLOUD_REL = "/Library/Mobile Documents/com~apple~CloudDocs";
 const pretty = (p) => short(p).replace("~" + ICLOUD_REL, "iCloud Drive");
+const whereName = (p) => (p === HOME ? "your home folder" : p === "/" ? "the whole disk" : pretty(p));
 
 // Category groups. Order = colour order; colour follows the group, never rank.
 const GROUPS = [
@@ -121,26 +122,59 @@ function modal(title, body, buttons) {
   });
 }
 
+// "Safe" = rebuilt automatically or provably redundant; anything else is "Check first".
+function riskPill(risk) {
+  return risk === "safe"
+    ? h("span", { class: "status good", title: "Rebuilt automatically, or an exact copy of something you keep" }, h("span", { class: "dot" }), "Safe")
+    : h("span", { class: "status warning", title: "Probably not needed, but only you can tell" }, h("span", { class: "dot" }), "Check first");
+}
+
+// items: [{label, detail, group?, why?}] - grouped by `group` when given.
 function confirmItems(title, items, okLabel, warning) {
-  const list = h("table", {}, h("tbody", {}, items.slice(0, 200).map((it) =>
-    h("tr", {}, h("td", { class: "name" }, h("span", { class: "trunc" }, it.label)),
-      h("td", { class: "ink2", style: { width: "45%" } }, h("span", { class: "trunc" }, it.detail || ""))))));
+  const byGroup = new Map();
+  for (const it of items.slice(0, 300)) {
+    const g = it.group || "";
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(it);
+  }
+  const list = h("div", {}, [...byGroup].map(([g, its]) => h("div", { style: { marginBottom: "10px" } },
+    g ? h("h3", { style: { margin: "6px 0 2px" } }, g) : null,
+    its[0].why ? h("div", { class: "ink2", style: { fontSize: "12px", marginBottom: "4px" } }, its[0].why) : null,
+    h("table", {}, h("tbody", {}, its.map((it) =>
+      h("tr", {}, h("td", { class: "name" }, h("span", { class: "trunc" }, it.label)),
+        h("td", { class: "ink2", style: { width: "45%" } }, h("span", { class: "trunc" }, it.detail || "")))))))));
   const body = h("div", {},
-    warning ? h("div", { class: "warn" }, warning) : null,
-    h("p", { class: "ink2" }, "Nothing is deleted: trashed items go to your Trash and every move can be undone from History."),
+    [].concat(warning || []).map((w) => h("div", { class: "warn" }, w)),
+    h("p", { class: "ink2" }, "Nothing is deleted yet: trashed items go to your Trash, and everything can be undone from History until you empty it."),
     h("div", { style: { maxHeight: "50vh", overflow: "auto" } }, list),
-    items.length > 200 ? h("p", { class: "muted" }, `…and ${items.length - 200} more`) : null);
+    items.length > 300 ? h("p", { class: "muted" }, `…and ${items.length - 300} more`) : null);
   return modal(title, body, [{ label: "Cancel", value: false }, { label: okLabel, value: true, cls: "primary" }]);
 }
 
+// items may carry `bytes` (not sent to the server's logic) so we can say how much went to the Trash.
 async function runActions(items) {
   const res = await post("/api/apply", { items });
-  const ok = res.results.filter((r) => r.ok).length;
+  const okPaths = new Set(res.results.filter((r) => r.ok).map((r) => r.path));
+  const ok = okPaths.size;
   const bad = res.results.filter((r) => !r.ok);
+  const trashed = items.filter((i) => i.action !== "move" && okPaths.has(i.path));
+  const trashedBytes = trashed.reduce((a, i) => a + (i.bytes || 0), 0);
+  const parts = [];
+  if (trashed.length) {
+    parts.push(h("p", {}, `${trashed.length} item${trashed.length === 1 ? "" : "s"}${trashedBytes ? ` (${fmt.size(trashedBytes)})` : ""} moved to the Trash. `,
+      h("b", {}, "The space comes back when you empty the Trash"), " (Finder → Empty Trash). Until then, you can undo any of it from History."));
+  } else if (ok) {
+    parts.push(h("p", {}, `${ok} item${ok === 1 ? "" : "s"} moved. Undo from History if needed.`));
+  }
   if (bad.length) {
-    await modal(`${ok} done, ${bad.length} skipped`, h("ul", {}, bad.map((b) => h("li", {}, `${short(b.path)}: ${b.error}`))));
+    parts.push(h("p", {}, `${bad.length} skipped:`), h("ul", {}, bad.map((b) => h("li", {}, `${short(b.path)}: ${b.error}`))));
+  }
+  if (trashed.length || bad.length) {
+    const v = await modal(bad.length && !ok ? "Nothing was changed" : "Done", h("div", {}, parts),
+      trashed.length ? [{ label: "Open Trash", value: "trash" }, { label: "OK", value: false, cls: "primary" }] : undefined);
+    if (v === "trash") post("/api/open-trash").then((r) => { if (!r.ok) toast(r.error); });
   } else {
-    toast(`${ok} item${ok === 1 ? "" : "s"} done. Undo from History if needed.`);
+    toast(`${ok} item${ok === 1 ? "" : "s"} moved. Undo from History if needed.`);
   }
   return res;
 }
@@ -263,10 +297,21 @@ VIEWS.overview = async (root) => {
   const review = purge.findings.filter((f) => f.risk === "review" && f.action).reduce((a, f) => a + f.alloc, 0);
   const t = abl.totals;
 
+  const hero = h("div", { class: "card hero" },
+    h("p", { class: "lead" },
+      safe ? [h("b", {}, fmt.size(safe)), " is ready to clean up"] : "Nothing is ready to clean up right away",
+      review ? [", and ", h("b", {}, fmt.size(review)), " more is worth a look"] : "",
+      ". ", h("b", {}, `${ibCount} item${ibCount === 1 ? "" : "s"}`), " are sitting in Downloads and Desktop",
+      ibStale ? [`, ${ibStale} of them untouched for ${inbox.stale_days}+ days`] : "", "."),
+    h("div", { class: "toolbar", style: { margin: 0 } },
+      h("a", { class: "btn primary", href: "#cleanup" }, "Start cleanup"),
+      h("a", { class: "btn", href: "#inbox" }, "Sort Downloads & Desktop"),
+      t.needs_collect || t.outside_library ? h("a", { class: "btn", href: "#music" }, "Tidy Ableton projects") : null));
+
   const tiles = h("div", { class: "grid tiles" },
-    tile("Scanned", fmt.size(m.total_alloc), `${fmt.count(m.total_files)} files in ${m.duration_s}s`),
+    tile("Space used by your files", fmt.size(m.total_alloc), `${fmt.count(m.total_files)} files`),
     tile("Catch-alls", `${ibCount} items`, `${fmt.size(ibSize)} · ${ibStale} untouched ${inbox.stale_days}+ days`, () => (location.hash = "#inbox")),
-    tile("Easy to free", fmt.size(safe), `+ ${fmt.size(review)} worth reviewing`, () => (location.hash = "#cleanup")),
+    tile("Ready to clean", fmt.size(safe), `+ ${fmt.size(review)} to check first`, () => (location.hash = "#cleanup")),
     tile("Ableton projects", fmt.count(t.projects),
       `${t.outside_library} outside your projects folder · ${t.needs_collect} need Collect All`, () => (location.hash = "#music")),
     ov.cloud ? tile("iCloud Drive", fmt.size(ov.cloud.size), `${fmt.size(ov.cloud.alloc)} downloaded to this Mac`) : null);
@@ -314,14 +359,14 @@ VIEWS.overview = async (root) => {
     h("td", { class: "num ink2" }, fmt.count(e.count)), h("td", { class: "num" }, fmt.size(e.alloc))))));
 
   const errors = ov.errors.length ? h("div", { class: "warn" },
-    `${m.errors} folders couldn't be read (e.g. ${short(ov.errors[0].path)}). Give Terminal Full Disk Access in `,
-    "System Settings → Privacy & Security, then rescan.") : null;
+    `${m.errors} folders couldn't be read (e.g. ${short(ov.errors[0].path)}). To include them, add Mac Cleaner under `,
+    "System Settings → Privacy & Security → Full Disk Access, then rescan.") : null;
 
   root.replaceChildren(
     h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Overview"),
-      h("div", { class: "ink2" }, `Scanned ${JSON.parse(m.roots || "[]").map(short).join(", ")} on ${m.scanned_at}`)),
+      h("div", { class: "ink2" }, `Scanned ${JSON.parse(m.roots || "[]").map(whereName).join(", ")} on ${m.scanned_at}`)),
     h("div", { class: "spacer" }), h("button", { class: "btn", onclick: showSurvey }, "Survey report")),
-    errors || "", tiles,
+    errors || "", hero, tiles,
     h("div", { class: "card", style: { marginBottom: "14px" } }, h("h2", {}, "Where the space goes"), share, legend),
     h("div", { class: "grid cols-2" },
       h("div", { class: "card" }, h("h2", {}, "Biggest folders in your home"), dirs),
@@ -343,8 +388,9 @@ async function showSurvey() {
 function updateBadges(inbox, purge) {
   if (inbox) $("#badge-inbox").textContent = inbox.inboxes.reduce((a, b) => a + b.count, 0) || "";
   if (purge && purge.findings) {
-    const n = purge.findings.filter((f) => f.action).reduce((a, f) => a + f.alloc, 0);
+    const n = purge.findings.filter((f) => f.action && f.risk === "safe").reduce((a, f) => a + f.alloc, 0);
     $("#badge-cleanup").textContent = n ? fmt.size(n) : "";
+    $("#badge-cleanup").title = "Ready to clean";
   }
 }
 
@@ -437,7 +483,7 @@ VIEWS.explore = async (root) => {
   const updateBar = () => {
     actionbar.set(selected.size, `${selected.size} selected · ${fmt.size([...selected.values()].reduce((a, n) => a + n.alloc, 0))}`, [
       h("button", { class: "btn", onclick: () => moveSelected([...selected.values()]) }, "Move to…"),
-      h("button", { class: "btn primary", onclick: () => trashSelected([...selected.values()]) }, "Move to Trash"),
+      h("button", { class: "btn primary", onclick: () => trashSelected([...selected.values()]) }, "Move to Trash…"),
     ]);
   };
   for (const n of nodes.slice(0, 300)) {
@@ -527,10 +573,17 @@ async function moveSelected(nodes) {
 }
 
 async function trashSelected(nodes) {
-  const ok = await confirmItems(`Move ${nodes.length} item(s) to the Trash?`,
-    nodes.map((n) => ({ label: n.name, detail: fmt.size(n.alloc) })), "Move to Trash");
+  const warnings = [];
+  if (nodes.some((n) => n.path.startsWith(HOME + "/Library/") && !n.path.includes(CLOUD_MARK))) {
+    warnings.push("Some of these are inside your Library folder, where apps keep their settings and data. Only trash them if you know what they are; Cleanup lists the ones that are safe.");
+  }
+  if (nodes.some((n) => n.path.includes(CLOUD_MARK))) {
+    warnings.push("Some of these are in iCloud Drive. Trashing them removes them from your other devices too.");
+  }
+  const ok = await confirmItems(`Move ${nodes.length} item${nodes.length === 1 ? "" : "s"} to the Trash?`,
+    nodes.map((n) => ({ label: n.name, detail: fmt.size(n.alloc) })), "Move to Trash", warnings);
   if (!ok) return;
-  await runActions(nodes.map((n) => ({ path: n.path, action: "trash" })));
+  await runActions(nodes.map((n) => ({ path: n.path, action: "trash", bytes: n.alloc })));
   route();
 }
 
@@ -561,7 +614,7 @@ VIEWS.inbox = async (root) => {
       label: i.name, detail: p.action === "trash" ? "→ Trash" : "→ " + pretty(p.dest),
     })), "Apply", risky.length ? `${risky.map((r) => r.i.name).join(", ")} contain files used by Ableton sets elsewhere; moving them will make those sets show missing files.` : null);
     if (!ok) return;
-    await runActions(todo.map(({ i, p }) => ({ path: i.path, action: p.action, dest: p.dest })));
+    await runActions(todo.map(({ i, p }) => ({ path: i.path, action: p.action, dest: p.dest, bytes: i.size })));
     route();
   };
 
@@ -605,8 +658,11 @@ VIEWS.inbox = async (root) => {
         h("td", {}, h("span", { class: "chip" }, h("i", { class: "sw", style: { background: i.kind === "ableton-project" ? "var(--c1)" : groupOf(i.category).color } }), kindLabel)),
         h("td", { class: "num" }, fmt.size(i.size)),
         h("td", { class: "num " + (i.stale ? "" : "muted"), title: "Since last modified" }, i.stale ? h("b", {}, fmt.age(i.age_days)) : fmt.age(i.age_days)),
-        h("td", { style: { width: "38%" } }, h("div", { class: "sugg" }, actSel, destIn),
-          i.suggestion ? h("div", { class: "muted", style: { fontSize: "11.5px" } }, "Rule: " + i.suggestion.rule + (i.suggestion.reason ? ` (${i.suggestion.reason})` : "")) : null),
+        h("td", { style: { width: "38%" } }, h("div", { class: "sugg" }, actSel, destIn,
+          s.action === "trash" ? riskPill(s.risk) : null),
+          h("div", { class: "muted", style: { fontSize: "11.5px" } }, i.suggestion
+            ? (i.suggestion.reason ? `${i.suggestion.rule}: ${i.suggestion.reason}` : `Rule: ${i.suggestion.rule}`)
+            : "No rule matched; choose where it goes, or leave it.")),
         h("td", {}, h("button", { class: "btn small", onclick: () => reveal(i.path) }, "Show")));
     });
     return h("div", { class: "card" },
@@ -619,24 +675,28 @@ VIEWS.inbox = async (root) => {
       h("tbody", {}, rows)) : h("p", { class: "muted" }, "Nothing here matches this filter."));
   });
 
-  const selectSuggested = () => {
+  const selectSuggested = (action) => {
     for (const cb of checkboxes) {
-      if (cb._item.suggestion && cb._item.suggestion.action !== "keep" && !cb._item.used_by) { cb.checked = true; selected.add(cb._item.path); }
+      const sg = cb._item.suggestion;
+      if (sg && sg.action === action && !cb._item.used_by) { cb.checked = true; selected.add(cb._item.path); }
     }
     updateBar();
   };
+  const count = (action) => checkboxes.filter((cb) => cb._item.suggestion && cb._item.suggestion.action === action && !cb._item.used_by).length;
 
   root.replaceChildren(
     h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Catch-alls"),
       h("div", { class: "ink2" }, "Everything sitting loose in your Downloads and Desktop, with a suggested home from your rules.")),
     h("div", { class: "spacer" })),
     h("div", { class: "toolbar" }, seg, h("div", { class: "spacer" }),
-      h("button", { class: "btn", onclick: selectSuggested }, "Select all with a suggestion"),
+      count("move") ? h("button", { class: "btn", onclick: () => selectSuggested("move") }, `Select ${count("move")} suggested moves`) : null,
+      count("trash") ? h("button", { class: "btn", onclick: () => selectSuggested("trash") }, `Select ${count("trash")} suggested for Trash`) : null,
       h("a", { class: "btn", href: "#rules" }, "Edit rules")),
     datalist, h("div", { class: "stack" }, sections));
 };
 
 // ---------------------------------------------------------------- cleanup
+const CLOUD_MARK = ICLOUD_REL + "/";
 VIEWS.cleanup = async (root) => {
   const data = await get("/api/purge");
   if (!data.has_scan) return noScan(root);
@@ -647,24 +707,38 @@ VIEWS.cleanup = async (root) => {
     if (!groups.has(f.group)) groups.set(f.group, []);
     groups.get(f.group).push(f);
   }
+  const confirmAndTrash = async (items) => {
+    const warnings = [];
+    if (items.some((f) => f.kind === "cache" || f.title === "Ableton decoding cache")) {
+      warnings.push("Quit the apps these caches belong to first (Live for its decoding cache). An app that's open while its cache moves can misbehave until you restart it.");
+    }
+    if (items.some((f) => f.path.includes(CLOUD_MARK))) {
+      warnings.push("Some of these are in iCloud Drive. Trashing them removes them from your other devices too.");
+    }
+    const ok = await confirmItems(`Move ${items.length} item${items.length === 1 ? "" : "s"} (${fmt.size(items.reduce((a, f) => a + f.alloc, 0))}) to the Trash?`,
+      items.map((f) => ({ group: f.group, why: f.kind === "dupe" ? null : f.why, label: f.title,
+        detail: `${fmt.size(f.alloc)} · ${pretty(f.path)}` })), "Move to Trash", warnings);
+    if (!ok) return;
+    await runActions(items.map((f) => ({ path: f.path, action: f.action, bytes: f.alloc })));
+    route();
+  };
   const updateBar = () => {
     const items = [...selected.values()];
     actionbar.set(items.length, `${items.length} selected · ${fmt.size(items.reduce((a, b) => a + b.alloc, 0))}`, [
-      h("button", { class: "btn primary", onclick: async () => {
-        const ok = await confirmItems(`Move ${items.length} item(s) to the Trash?`,
-          items.map((f) => ({ label: f.title, detail: `${fmt.size(f.alloc)} · ${pretty(f.path)}` })), "Move to Trash");
-        if (!ok) return;
-        await runActions(items.map((f) => ({ path: f.path, action: f.action })));
-        route();
-      } }, "Move to Trash"),
+      h("button", { class: "btn", onclick: () => { selected.clear(); route(); } }, "Clear"),
+      h("button", { class: "btn primary", onclick: () => confirmAndTrash(items) }, "Move to Trash…"),
     ]);
   };
   const boxes = [];
+  const LIMIT = 150;
   const cards = [...groups].sort((a, b) => b[1].reduce((s, f) => s + f.alloc, 0) - a[1].reduce((s, f) => s + f.alloc, 0)).map(([name, items]) => {
     const total = items.reduce((a, f) => a + f.alloc, 0);
+    const infoOnly = items.every((f) => !f.action);
+    const sorted = items.sort((a, b) => b.alloc - a.alloc);
     return h("div", { class: "card" },
-      h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, name), h("span", { class: "ink2" }, `${items.length} · ${fmt.size(total)}`)),
-      h("table", {}, h("tbody", {}, items.sort((a, b) => b.alloc - a.alloc).slice(0, 150).map((f) => {
+      h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, name), h("span", { class: "ink2" }, `${items.length} · ${fmt.size(total)}`),
+        infoOnly ? h("span", { class: "chip" }, "For information: nothing to select") : null),
+      h("table", {}, h("tbody", {}, sorted.slice(0, LIMIT).map((f) => {
         const cb = f.action ? h("input", { type: "checkbox", "aria-label": "Select " + f.title, onchange: () => {
           if (cb.checked) selected.set(f.path, f); else selected.delete(f.path);
           updateBar();
@@ -674,18 +748,32 @@ VIEWS.cleanup = async (root) => {
           h("td", { class: "check" }, cb),
           h("td", { class: "name" }, h("span", { class: "trunc", title: f.title }, f.title),
             h("span", { class: "trunc path", title: f.path }, pretty(f.path))),
-          h("td", { style: { width: "84px" } }, f.risk === "safe" ? h("span", { class: "status good" }, h("span", { class: "dot" }), "Safe")
-            : h("span", { class: "status warning" }, h("span", { class: "dot" }), "Review")),
+          h("td", { style: { width: "104px" } }, f.action ? riskPill(f.risk) : null),
           h("td", { class: "ink2", style: { width: "40%" } }, f.why),
           h("td", { class: "num", style: { width: "80px" } }, fmt.size(f.alloc)),
           h("td", {}, h("button", { class: "btn small", onclick: () => reveal(f.path) }, "Show")));
-      }))));
+      }))),
+      items.length > LIMIT ? h("p", { class: "muted" }, `Showing the ${LIMIT} biggest of ${items.length}.`) : null);
   });
+  const safeBoxes = boxes.filter((cb) => cb._f.risk === "safe");
+  const safeBytes = safeBoxes.reduce((a, cb) => a + cb._f.alloc, 0);
+  const sum = data.summary || {};
+  const banner = sum.unchecked_sets ? h("div", { class: "warn" },
+    `${sum.unchecked_sets} Ableton set${sum.unchecked_sets === 1 ? "" : "s"} couldn't be checked (only in iCloud, or unreadable), so audio duplicates are hidden: one of those sets might use them. `,
+    "To check them, open iCloud Drive in Finder, right-click Ableton Projects → Download Now, then rescan.") : null;
   root.replaceChildren(
     h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Cleanup"),
-      h("div", { class: "ink2" }, "Things that are probably safe to remove. Selected items go to the Trash; empty it yourself when you're sure.")),
+      h("div", { class: "ink2" }, "Things you probably don't need. Ticked items go to the Trash, so nothing is gone until you empty it.")),
     h("div", { class: "spacer" }),
-    h("button", { class: "btn", onclick: () => { boxes.forEach((cb) => { if (cb._f.risk === "safe") { cb.checked = true; selected.set(cb._f.path, cb._f); } }); updateBar(); } }, "Select all safe")),
+    safeBoxes.length ? h("button", { class: "btn primary", onclick: () => {
+      safeBoxes.forEach((cb) => { cb.checked = true; selected.set(cb._f.path, cb._f); });
+      updateBar();
+    } }, `Select ${safeBoxes.length} safe item${safeBoxes.length === 1 ? "" : "s"} (${fmt.size(safeBytes)})`) : null),
+    h("div", { class: "legend-row" },
+      riskPill("safe"), h("span", { class: "ink2" }, "rebuilt automatically, or an exact copy of something you keep"),
+      riskPill("review"), h("span", { class: "ink2" }, "probably not needed, but only you can tell"),
+      h("span", { class: "muted" }, data.scanned_at ? `Based on the scan from ${data.scanned_at}. Everything is re-checked when you click.` : "")),
+    banner || "",
     cards.length ? h("div", { class: "stack" }, cards) : h("div", { class: "card empty" }, "Nothing obvious to clean up. Nice."));
 };
 
@@ -778,10 +866,10 @@ VIEWS.music = async (root) => {
       h("div", { class: "ink2" }, "Every Ableton project found on this Mac, where it lives, and whether it's safe to move."))),
     h("div", { class: "grid tiles" },
       tile("Projects", fmt.count(t.projects), fmt.size(t.alloc)),
-      tile("Outside your projects folder", fmt.count(t.outside_library), short(data.root).replace("~" + ICLOUD_REL, "iCloud Drive")),
+      tile("Outside your projects folder", fmt.count(t.outside_library), "should move into " + pretty(data.root)),
       tile("Need Collect All and Save", fmt.count(t.needs_collect), "use samples outside the project, or have missing ones"),
       tile("Auto-backups", fmt.size(t.backup_bytes), "Backup folders inside projects"),
-      tile(".asd analysis files", fmt.size(t.asd_bytes), "safe to delete; Live rebuilds them")),
+      tile(".asd analysis files", fmt.size(t.asd_bytes), "waveform and warp data; Live re-analyses most of it")),
     h("div", { class: "grid cols-2", style: { marginBottom: "14px" } },
       h("div", { class: "card" }, h("h2", {}, "Where projects live"), locs),
       h("div", { class: "card note" }, h("h2", {}, "Suggested system"),
@@ -819,44 +907,59 @@ function projectDetail(p) {
 VIEWS.rules = async (root) => {
   const data = await get("/api/config");
   const cfg = data.config;
-  const describe = (w) => Object.entries(w || {}).map(([k, v]) => {
-    const val = Array.isArray(v) ? v.join(", ") : v;
-    return { category: `type is ${val}`, ext: `extension ${val}`, kind: `is a ${val}`, name_regex: `name matches /${val}/`,
-      older_than_days: `untouched ${val}+ days`, larger_than_mb: `bigger than ${val} MB` }[k] || `${k}: ${val}`;
-  }).join(" and ") || "anything";
-  const ta = h("textarea", { class: "code", spellcheck: "false" }, JSON.stringify(cfg, null, 2));
-  const save = async () => {
-    let parsed;
-    try { parsed = JSON.parse(ta.value); } catch (e) { return toast("That isn't valid JSON: " + e.message); }
-    const r = await post("/api/config", { config: parsed });
-    if (r.ok) { toast("Saved."); route(); } else toast(r.error);
+  const what = (w) => {
+    const bits = [];
+    if (w.kind && w.kind.includes("ableton-project")) bits.push("Ableton project folders");
+    else if (w.ext) bits.push(w.ext.join(", ") + " files");
+    else if (w.category) bits.push(w.category.map((c) => (CAT_LABEL[c] || c).toLowerCase()).join(" or ") + (w.kind && w.kind.includes("folder") ? " folders" : " files"));
+    else if (w.name_regex) bits.push("files named like " + w.name_regex.replace(/^\^\(?|\)?\\b$|\\b/g, "").split("|").slice(0, 3).join(" / "));
+    else bits.push("anything");
+    if (w.name_regex && (w.ext || w.category)) bits.push("from known music-software makers");
+    if (w.larger_than_mb) bits.push(`bigger than ${w.larger_than_mb} MB`);
+    return bits.join(" ");
   };
+  const save = async (next) => {
+    const r = await post("/api/config", { config: next });
+    if (r.ok) { toast("Saved. Catch-alls uses the new rules straight away."); route(); } else toast(r.error);
+  };
+  const rows = cfg.rules.map((r, i) => {
+    const w = r.when || {};
+    const on = h("input", { type: "checkbox", checked: r.enabled !== false, "aria-label": `Rule ${r.name} on`,
+      onchange: () => { cfg.rules[i].enabled = on.checked; save(cfg); } });
+    let days = null;
+    if (w.older_than_days !== undefined) {
+      days = h("input", { type: "number", min: 0, value: w.older_than_days, style: { width: "56px" },
+        "aria-label": "Days", onchange: () => { cfg.rules[i].when.older_than_days = Number(days.value) || 0; save(cfg); } });
+    }
+    const then = r.action === "move" ? ["move them to ", h("b", {}, pretty(r.dest.replace("{cloud}", HOME + ICLOUD_REL).replace("{ableton}", "iCloud Drive/Ableton Projects").replace("{year}", "‹year›").replace("{month}", "‹month›")))]
+      : r.action === "trash" ? ["suggest the Trash ", riskPill(r.risk || "review")] : ["leave them"];
+    return h("tr", { class: r.enabled === false ? "off" : "" },
+      h("td", { class: "check" }, on),
+      h("td", {}, h("div", {}, h("b", {}, r.name || `Rule ${i + 1}`)),
+        h("div", { class: "ink2" }, "When there are ", what(w),
+          days ? [" untouched for ", days, " days"] : "", ", ", then, ".")),
+      h("td", { class: "muted" }, r.auto ? "runs automatically" : ""));
+  });
+  const ta = h("textarea", { class: "code", spellcheck: "false" }, JSON.stringify(cfg, null, 2));
   root.replaceChildren(
     h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Rules"),
-      h("div", { class: "ink2" }, "Checked top to bottom for each item in your catch-alls; the first match is the suggestion."))),
-    h("div", { class: "grid cols-2" },
-      h("div", { class: "card" },
-        h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "#"), h("th", {}, "When"), h("th", {}, "Then"), h("th", {}, "Auto"))),
-          h("tbody", {}, cfg.rules.map((r, i) => h("tr", {},
-            h("td", { class: "muted num" }, i + 1),
-            h("td", {}, h("b", {}, r.name || ""), h("div", { class: "ink2" }, describe(r.when))),
-            h("td", {}, r.action === "move" ? h("span", {}, "Move to ", h("span", { class: "mono" }, r.dest)) : r.action === "trash" ? "Trash" : "Keep"),
-            h("td", {}, r.auto ? "yes" : h("span", { class: "muted" }, "no")))))),
-        h("p", { class: "ink2" }, "Destinations can use ", h("span", { class: "mono" }, "{cloud} {ableton} {year} {month} {category}"),
-          ". Rules marked auto run with ", h("span", { class: "mono" }, "python3 -m macclean autosort --apply"),
-          ", which you can schedule (see README)."),
-        h("div", { class: "kv" },
-          h("span", { class: "muted" }, "Catch-alls"), h("span", {}, cfg.inboxes.join(", ")),
-          h("span", { class: "muted" }, "Cloud root"), h("span", {}, cfg.cloud_root),
-          h("span", { class: "muted" }, "Ableton root"), h("span", {}, cfg.ableton_root),
-          h("span", { class: "muted" }, "Project buckets"), h("span", {}, cfg.ableton_buckets.join(", ")),
-          h("span", { class: "muted" }, "Stale after"), h("span", {}, `${cfg.stale_days} days`))),
-      h("div", { class: "card" },
-        h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, "Edit"), h("span", { class: "muted mono" }, short(data.path)),
-          h("div", { class: "spacer" }),
-          h("button", { class: "btn", onclick: () => { ta.value = JSON.stringify(data.defaults, null, 2); } }, "Load defaults"),
-          h("button", { class: "btn primary", onclick: save }, "Save")),
-        ta)));
+      h("div", { class: "ink2" }, "How Catch-alls suggests a home for things in Downloads and Desktop. The first rule that fits an item wins. Rules only ever suggest; nothing happens until you click Apply."))),
+    h("div", { class: "card", style: { marginBottom: "14px" } },
+      h("table", { class: "rules" }, h("tbody", {}, rows)),
+      h("p", { class: "ink2" }, `Desktop counts as your active workspace: its items are left alone until untouched for ${cfg.stale_days} days. `,
+        "Anything an Ableton set uses is always kept where it is, whatever the rules say.")),
+    h("details", { class: "card" },
+      h("summary", {}, "Advanced: edit the rules as text"),
+      h("p", { class: "ink2" }, "Destinations can use {cloud} {ableton} {year} {month} {category}. ",
+        "Settings file: ", h("span", { class: "mono" }, short(data.path))),
+      h("div", { class: "toolbar" }, h("div", { class: "spacer" }),
+        h("button", { class: "btn", onclick: () => { ta.value = JSON.stringify(data.defaults, null, 2); } }, "Load defaults"),
+        h("button", { class: "btn primary", onclick: () => {
+          let parsed;
+          try { parsed = JSON.parse(ta.value); } catch (e) { return toast("That isn't valid JSON: " + e.message); }
+          save(parsed);
+        } }, "Save")),
+      ta));
 };
 
 // ----------------------------------------------------------------- history
@@ -874,7 +977,8 @@ VIEWS.history = async (root) => {
           const r = await post("/api/undo", { id: e.id });
           if (r.ok) { toast("Undone."); route(); } else toast(r.error);
         } }, "Undo")))))))
-      : h("div", { class: "card empty" }, "Nothing yet."));
+      : h("div", { class: "card empty" }, h("h2", {}, "Nothing yet"),
+        h("p", {}, "Anything you move or trash shows up here, and can be undone until you empty the Trash.")));
 };
 
 // ----------------------------------------------------------------- updates

@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, ableton, actions, config, db, inbox, purge, survey, updater
+from . import __version__, ableton, actions, config, db, inbox, purge, safety, survey, updater
 from .scanner import BackgroundScan
 
 STATIC = Path(__file__).parent / "static"
@@ -109,7 +109,10 @@ def api_purge(q):
     con = _con()
     if not con:
         return {"has_scan": False}
-    return {"has_scan": True, "findings": purge.findings(con, config.load_config()), "groups": purge.GROUPS}
+    cfg = config.load_config()
+    items = purge.findings(con, cfg)
+    return {"has_scan": True, "findings": items, "groups": purge.GROUPS,
+            "summary": purge.summary(con, cfg, items), "scanned_at": db.meta(con).get("scanned_at")}
 
 
 def api_ableton(q):
@@ -211,14 +214,30 @@ def post_cancel(body):
 
 def post_apply(body):
     cfg = config.load_config()
+    con = _con()
     plain, results = [], []
     for it in body.get("items", []):
-        if it.get("action") == "trash-asd":
+        # The scan may be out of date: re-check every trash at the moment of the click.
+        scanned = None
+        if con is not None:
+            row = con.execute("SELECT size, mtime FROM files WHERE path=?", (it.get("path"),)).fetchone()
+            scanned = dict(row) if row else None
+        problem = safety.preflight(con, it.get("path", ""), it.get("action", ""), scanned)
+        if problem:
+            results.append({"ok": False, "path": it.get("path"), "error": f"Skipped: {problem}"})
+        elif it.get("action") == "trash-asd":
             results.extend(purge.trash_asd(it["path"], cfg))
         else:
             plain.append(it)
     results.extend(actions.apply(plain, cfg, dry_run=bool(body.get("dry_run"))))
     return {"results": results}
+
+
+def post_open_trash(body):
+    if sys.platform == "darwin":
+        subprocess.run(["open", str(config.home() / ".Trash")], check=False)
+        return {"ok": True}
+    return {"ok": False, "error": "Opening the Trash only works on macOS"}
 
 
 def post_undo(body):
@@ -251,7 +270,7 @@ GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": ap
        "/api/config": api_config, "/api/history": api_history, "/api/survey": api_survey,
        "/api/update": api_update}
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
-        "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal,
+        "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal, "/api/open-trash": post_open_trash,
         "/api/update/install": post_update_install, "/api/update/rollback": post_update_rollback,
         "/api/update/token": post_update_token, "/api/update/migrate": post_update_migrate, "/api/quit": post_quit}
 

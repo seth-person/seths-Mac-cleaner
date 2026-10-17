@@ -13,20 +13,11 @@ import time
 import uuid
 from pathlib import Path
 
-from . import config
+from . import config, safety
 
 
 class ActionError(Exception):
     pass
-
-
-def _protected(cfg: dict) -> set:
-    h = config.home()
-    paths = {h, h / "Library", h / "Desktop", h / "Downloads", h / "Documents", h / "Music",
-             h / "Pictures", h / "Movies", h / ".Trash", config.expand(cfg["cloud_root"], cfg),
-             config.expand(cfg["ableton_root"], cfg)}
-    paths.update(config.inbox_paths(cfg))
-    return {os.path.realpath(p) for p in paths}
 
 
 def _check_source(src: Path, cfg: dict) -> Path:
@@ -35,9 +26,10 @@ def _check_source(src: Path, cfg: dict) -> Path:
         raise ActionError(f"{src} no longer exists")
     real = os.path.realpath(src) if not src.is_symlink() else str(src)
     if not real.startswith(str(os.path.realpath(config.home())) + os.sep):
-        raise ActionError(f"{src} is outside your home folder; macclean only touches your own files")
-    if real in _protected(cfg):
-        raise ActionError(f"{src} is a top-level folder and can't be moved or trashed")
+        raise ActionError(f"{src} is outside your home folder; Mac Cleaner only touches your own files")
+    reason = safety.protected_reason(str(src), cfg)
+    if reason:
+        raise ActionError(f"{src.name} {reason}, so Mac Cleaner won't move or trash it")
     return src
 
 
@@ -92,6 +84,28 @@ def trash(src, cfg: dict | None = None, dry_run: bool = False, note: str = "") -
     return _log({"op": "trash", "src": str(src), "dst": str(target), "note": note})
 
 
+def trash_group(paths: list, label: str, cfg: dict | None = None) -> dict:
+    """Trash several files into one folder in the Trash, logged (and undone) as one action."""
+    cfg = cfg or config.load_config()
+    srcs = [_check_source(Path(p), cfg) for p in paths]
+    folder = _unique(config.home() / ".Trash" / label)
+    folder.mkdir(parents=True)
+    moved = []
+    try:
+        for src in srcs:
+            dst = _unique(folder / src.name)
+            shutil.move(str(src), str(dst))
+            moved.append([str(src), str(dst)])
+    finally:
+        if moved:
+            entry = _log({"op": "trash", "src": os.path.dirname(moved[0][0]), "dst": str(folder),
+                          "items": moved, "note": f"{len(moved)} files"})
+    if not moved:
+        folder.rmdir()
+        raise ActionError("Nothing was moved")
+    return entry
+
+
 def history(limit: int = 500) -> list:
     p = config.actions_log_path()
     if not p.exists():
@@ -116,6 +130,21 @@ def undo(action_id: str) -> dict:
         raise ActionError("No such action")
     if entry["undone"]:
         raise ActionError("Already undone")
+    if entry.get("items"):  # a group: put every file back, then drop the folder in the Trash
+        missing = [d for _, d in entry["items"] if not os.path.lexists(d)]
+        if missing:
+            raise ActionError(f"{len(missing)} of these files aren't in the Trash any more")
+        clash = [s for s, _ in entry["items"] if os.path.lexists(s)]
+        if clash:
+            raise ActionError(f"Something already exists at {clash[0]}")
+        for s_, d in entry["items"]:
+            os.makedirs(os.path.dirname(s_), exist_ok=True)
+            shutil.move(d, s_)
+        try:
+            os.rmdir(entry["dst"])
+        except OSError:
+            pass
+        return _log({"op": "undo", "undoes": action_id, "src": entry["dst"], "dst": entry["src"]})
     src, dst = entry["src"], entry["dst"]
     if not os.path.lexists(dst):
         raise ActionError(f"{dst} isn't there any more (Trash emptied, or moved again?)")

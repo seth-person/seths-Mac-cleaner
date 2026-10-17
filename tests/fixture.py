@@ -8,6 +8,7 @@ import gzip
 import os
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 DAY = 86400
@@ -34,6 +35,11 @@ def als_xml(refs, version="Ableton Live 12.1.5") -> bytes:
     parts.append("</Events></ArrangerAutomation></Sample></MainSequencer></DeviceChain></AudioTrack>"
                  "</Tracks></LiveSet></Ableton>")
     return gzip.compress("".join(parts).encode())
+
+
+def _age(path: Path, days: float) -> None:
+    t = time.time() - days * DAY
+    os.utime(path, (t, t))
 
 
 def write(path: Path, data: bytes = b"", size: int = 0, age_days: float = 0, seed: int = 0) -> Path:
@@ -81,9 +87,18 @@ def build(home: Path) -> Path:
     # Downloads: the usual pile.
     write(dl / "Serum_x64_installer.dmg", size=3_000_000, age_days=40, seed=1)
     write(dl / "Ozone 11.pkg", size=2_000_000, age_days=1, seed=2)
-    write(dl / "Drum Pack Vol 2.zip", size=1_500_000, age_days=20, seed=4)
     for i in range(4):
         write(dl / "Drum Pack Vol 2" / f"kick_{i}.wav", size=120_000, age_days=20, seed=10 + i)
+    # The zip it came from: identical contents, so it's provably redundant.
+    with zipfile.ZipFile(dl / "Drum Pack Vol 2.zip", "w") as zf:
+        for i in range(4):
+            zf.write(dl / "Drum Pack Vol 2" / f"kick_{i}.wav", f"Drum Pack Vol 2/kick_{i}.wav")
+    _age(dl / "Drum Pack Vol 2.zip", 20)
+    write(dl / "SomeApp-2.1.dmg", size=2_500_000, age_days=40, seed=3)
+    # An installer folder that also holds a license key: never trash the folder.
+    write(dl / "Installer Bundle" / "Setup.pkg", size=3_000_000, age_days=40, seed=14)
+    write(dl / "Installer Bundle" / "LICENSE KEY.txt", b"ABCD-1234", age_days=40)
+    write(dl / "report copy.pdf", b"%PDF-1.7 " + bytes(1_200_000), age_days=10)
     write(dl / "final mix v3.wav", size=1_200_000, age_days=5, seed=5)
     write(dl / "Screenshot 2026-07-01 at 10.00.00.png", size=200_000, age_days=90, seed=6)
     write(dl / "lease agreement.pdf", b"%PDF-1.7 fake", age_days=60)
@@ -103,6 +118,7 @@ def build(home: Path) -> Path:
     project(abl / "Finished", "Song A Project", samples=["lead.wav"], age_days=400)
     project(abl, "Song B Project", samples=["drums.wav"], missing=["gone.wav"], age_days=200)
     write(cloud / "Documents" / "taxes 2025.pdf", b"%PDF-1.7 taxes", age_days=200)
+    write(cloud / "Documents" / "report.pdf", b"%PDF-1.7 " + bytes(1_200_000), age_days=30)
     write(cloud / "Music" / "Bounces" / "2025" / "song a master.wav", size=1_100_000, age_days=300, seed=8)
 
     # Elsewhere: a stray copy of a project and a big old file.
@@ -111,7 +127,10 @@ def build(home: Path) -> Path:
 
     # Library: caches.
     write(home / "Library" / "Caches" / "com.spotify.client" / "Data" / "blob", size=21_000_000, seed=13)
+    write(home / "Library" / "Caches" / "com.google.Chrome" / "Cache_Data" / "blob", size=21_000_000, seed=15)
     write(home / "Library" / "Caches" / "tiny" / "x", b"x")
+    # A sound library that duplicates a sample on purpose: never a "duplicate".
+    write(home / "Music" / "Ableton" / "User Library" / "Samples" / "chop.wav", size=1_100_000, seed=8)
     return home
 
 

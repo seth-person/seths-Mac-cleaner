@@ -3,8 +3,9 @@
 Candidates are grouped by size, then by a hash of the first and last 64 KB,
 and only then fully hashed, so most files are never read in full. Files that
 only exist in iCloud are skipped (reading them would download them), as are
-files inside Ableton projects: "Collect All and Save" deliberately copies
-samples into every project, and removing those copies would break the sets.
+files inside Ableton projects and sound libraries: "Collect All and Save"
+deliberately copies samples into every project, and libraries duplicate
+content on purpose. Removing those copies would break things.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import hashlib
 import os
 from collections import defaultdict
 
-from . import config
+from . import config, safety
 
 CHUNK = 64 * 1024
 MIN_DUPE_SIZE = 1_000_000
@@ -50,6 +51,8 @@ def _excluded(path: str, project_dirs: list, library: str) -> bool:
     if path.startswith(library + os.sep) and config.ICLOUD_REL not in path and "/CloudStorage/" not in path:
         return True
     if "/." in path:  # hidden folders: app state, .git, .Trash
+        return True
+    if safety.in_sound_library(path):  # Packs, User Library, Splice, Kontakt...: copies are by design
         return True
     return any(path.startswith(p + os.sep) for p in project_dirs)
 

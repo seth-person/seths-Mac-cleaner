@@ -37,9 +37,19 @@ def config_path() -> Path:
     return app_dir() / "config.json"
 
 
+# Installers from audio software makers are worth keeping (one-time purchases,
+# old versions), so they're filed rather than trashed.
+PLUGIN_VENDORS = (r"(fabfilter|native.?instruments|native.?access|komplete|kontakt|izotope|ozone|neutron|serum|xfer|"
+                  r"arturia|spitfire|u-he|valhalla|soundtoys|waves|plugin.?alliance|slate|output|splice|vital|"
+                  r"ableton|toontrack|spectrasonics|omnisphere|eventide|sonnox|melda|kilohearts|cableguys|"
+                  r"\b(vst3?|au|aax)\b)")
+
 # Rules are checked top to bottom against each item in an inbox; the first match
 # produces the suggestion. "dest" templates may use {cloud} {ableton} {home}
 # {year} {month} {category}. Rules with "auto": true are applied by `autosort`.
+# "enabled": false switches a rule off. Trash rules only ever match single
+# files (never folders), and their "risk" ("safe"/"review") is shown next to
+# the suggestion.
 DEFAULT_CONFIG = {
     "inboxes": ["~/Downloads", "~/Desktop"],
     # Inboxes you actively work out of: items there are left alone until stale.
@@ -58,12 +68,15 @@ DEFAULT_CONFIG = {
     # (inbox files, Ableton sets and audio are always stored).
     "min_file_mb": 1,
     "rules": [
-        {"name": "Unfinished downloads", "when": {"ext": [".crdownload", ".download", ".part", ".partial"], "older_than_days": 2},
-         "action": "trash", "auto": False},
-        {"name": "Installers already used", "when": {"category": ["installer"], "older_than_days": 3},
-         "action": "trash", "auto": False},
-        {"name": "Old screenshots", "when": {"name_regex": r"^(Screenshot|Screen Shot|Screen Recording)\b", "older_than_days": 14},
-         "action": "trash", "auto": False},
+        {"name": "Unfinished downloads", "when": {"kind": ["file"], "ext": [".crdownload", ".download", ".part", ".partial"], "older_than_days": 2},
+         "action": "trash", "risk": "safe", "auto": False},
+        {"name": "Plugin & instrument installers",
+         "when": {"category": ["installer", "archive"], "name_regex": PLUGIN_VENDORS},
+         "action": "move", "dest": "{cloud}/Music/Plugin Installers"},
+        {"name": "Installers already used", "when": {"kind": ["file"], "category": ["installer"], "older_than_days": 14},
+         "action": "trash", "risk": "review", "auto": False},
+        {"name": "Old screenshots", "when": {"kind": ["file"], "name_regex": r"^(Screenshot|Screen Shot|Screen Recording)\b", "older_than_days": 30},
+         "action": "move", "dest": "{cloud}/Pictures/Screenshots/{year}"},
         {"name": "Ableton projects", "when": {"kind": ["ableton-project"]},
          "action": "move", "dest": "{ableton}/Active"},
         {"name": "Loose Ableton sets", "when": {"ext": [".als"]},

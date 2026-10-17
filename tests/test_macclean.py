@@ -107,9 +107,14 @@ class InboxTests(FakeHome):
 
     def test_suggestions(self):
         it = self.items()
-        self.assertEqual(it["Serum_x64_installer.dmg"]["suggestion"]["action"], "trash")
-        self.assertIsNone(it["Ozone 11.pkg"]["suggestion"])  # too fresh
+        # Installers from plugin makers are filed, not trashed; others are trash candidates to check.
+        self.assertTrue(it["Serum_x64_installer.dmg"]["suggestion"]["dest"].endswith("Music/Plugin Installers"))
+        self.assertTrue(it["Ozone 11.pkg"]["suggestion"]["dest"].endswith("Music/Plugin Installers"))
+        self.assertEqual((it["SomeApp-2.1.dmg"]["suggestion"]["action"], it["SomeApp-2.1.dmg"]["suggestion"]["risk"]),
+                         ("trash", "review"))
         self.assertEqual(it["Drum Pack Vol 2.zip"]["suggestion"]["rule"], "Already unzipped")
+        self.assertEqual(it["Drum Pack Vol 2.zip"]["suggestion"]["risk"], "safe")
+        self.assertTrue(it["Screenshot 2026-07-01 at 10.00.00.png"]["suggestion"]["dest"].endswith("Pictures/Screenshots/2026"))
         self.assertEqual(it["Drum Pack Vol 2"]["category"], "audio")
         self.assertTrue(it["Drum Pack Vol 2"]["suggestion"]["dest"].endswith("Music/Samples"))
         self.assertEqual(it["Old Song Project"]["kind"], "ableton-project")
@@ -121,8 +126,24 @@ class InboxTests(FakeHome):
         self.assertEqual(it["notes.txt"]["suggestion"]["action"], "keep")
         self.assertEqual(it["Current Song Project"]["suggestion"]["action"], "keep")
 
-    def test_files_used_by_sets_are_flagged(self):
-        self.assertIn("used_by", self.items()["vocal chop.wav"])
+    def test_files_used_by_sets_are_kept(self):
+        item = self.items()["vocal chop.wav"]
+        self.assertIn("used_by", item)
+        self.assertEqual(item["suggestion"]["action"], "keep")
+
+    def test_trash_rules_never_match_folders(self):
+        bundle = self.items()["Installer Bundle"]
+        self.assertEqual(bundle["category"], "installer")  # mostly a .pkg by size...
+        self.assertNotEqual((bundle.get("suggestion") or {}).get("action"), "trash")  # ...but it has a license key
+
+    def test_disabled_rules_are_skipped(self):
+        cfg = json.loads(json.dumps(self.cfg))
+        for r in cfg["rules"]:
+            if r["name"] == "Installers already used":
+                r["enabled"] = False
+        data = inbox.list_inboxes(cfg)
+        item = next(i for ib in data["inboxes"] for i in ib["items"] if i["name"] == "SomeApp-2.1.dmg")
+        self.assertIsNone(item["suggestion"])
 
     def test_autosort_only_runs_auto_rules(self):
         self.assertEqual(inbox.autosort(self.cfg, dry_run=True), [])
@@ -134,14 +155,43 @@ class InboxTests(FakeHome):
 
 
 class PurgeTests(FakeHome):
+    def findings(self):
+        return {(x["kind"], os.path.basename(x["path"])): x for x in purge.findings(self.con, self.cfg)}
+
     def test_findings(self):
-        f = {(x["kind"], os.path.basename(x["path"])): x for x in purge.findings(self.con, self.cfg)}
-        self.assertIn(("cache", "com.spotify.client"), f)
-        self.assertIn(("installer", "Serum_x64_installer.dmg"), f)
-        self.assertIn(("installer", "big-video.crdownload"), f)
-        self.assertIn(("archive", "Drum Pack Vol 2.zip"), f)
+        f = self.findings()
+        self.assertEqual(f[("cache", "com.google.Chrome")]["risk"], "safe")
+        self.assertNotIn(("cache", "com.spotify.client"), f)  # may hold offline music
+        self.assertEqual(f[("installer", "SomeApp-2.1.dmg")]["risk"], "review")
+        self.assertEqual(f[("installer", "big-video.crdownload")]["risk"], "safe")
+        self.assertEqual(f[("archive", "Drum Pack Vol 2.zip")]["risk"], "safe")  # contents verified
         self.assertIn(("ableton", "Backup"), f)
         self.assertNotIn(("cache", "tiny"), f)
+        self.assertNotIn(("installer", "Serum_x64_installer.dmg"), f)  # filed by Catch-alls instead
+
+    def test_safe_means_rebuildable_or_redundant_only(self):
+        safe = {k for k, v in self.findings().items() if v["risk"] == "safe" and v["action"]}
+        self.assertEqual(safe, {("cache", "com.google.Chrome"), ("installer", "big-video.crdownload"),
+                                ("archive", "Drum Pack Vol 2.zip")})
+
+    def test_duplicate_keeps_the_organised_icloud_copy(self):
+        f = self.findings()
+        self.assertIn(("dupe", "report copy.pdf"), f)
+        self.assertTrue(f[("dupe", "report copy.pdf")]["keep"].endswith("Documents/report.pdf"))
+
+    def test_sound_library_copies_are_not_duplicates(self):
+        self.assertFalse(any("User Library" in x["path"] or "User Library" in x.get("keep", "")
+                             for x in purge.findings(self.con, self.cfg)))
+
+    def test_unreadable_sets_suppress_audio_duplicates(self):
+        self.con.execute("INSERT INTO ableton_sets (path, error) VALUES ('/x/y.als', 'Only in iCloud')")
+        try:
+            kinds = [(x["kind"], x["title"]) for x in purge.findings(self.con, self.cfg)]
+            self.assertNotIn(("dupe", "song a master.wav"), kinds)
+            self.assertIn(("dupe", "report copy.pdf"), kinds)  # not audio, still listed
+            self.assertEqual(purge.summary(self.con, self.cfg, [])["unchecked_sets"], 1)
+        finally:
+            self.con.execute("DELETE FROM ableton_sets WHERE path='/x/y.als'")
 
     def test_never_suggests_trashing_a_sample_a_set_uses(self):
         paths = [x["path"] for x in purge.findings(self.con, self.cfg) if x["action"]]
@@ -198,6 +248,41 @@ class ActionTests(unittest.TestCase):
         ], self.cfg)
         self.assertEqual([r["ok"] for r in res], [False] * 4)
         self.assertTrue(self.f.exists())
+
+    def test_refuses_app_data_and_libraries(self):
+        h = self.home
+        for rel in ("Library/Keychains", "Library/Caches", "Library/Mobile Documents",
+                    "Library/Application Support/Ableton", "Library/Containers/com.spotify.client",
+                    "Music/Ableton/User Library", "Pictures/Photos Library.photoslibrary"):
+            (h / rel).mkdir(parents=True, exist_ok=True)
+            res = actions.apply([{"path": str(h / rel), "action": "trash"}], self.cfg)
+            self.assertFalse(res[0]["ok"], rel)
+            self.assertTrue((h / rel).exists(), rel)
+        # ...but a cache inside ~/Library/Caches, or a project inside ~/Music/Ableton/Projects, is fine.
+        (h / "Library/Caches/com.google.Chrome").mkdir(parents=True)
+        (h / "Music/Ableton/Projects/Song Project").mkdir(parents=True)
+        res = actions.apply([{"path": str(h / "Library/Caches/com.google.Chrome"), "action": "trash"},
+                             {"path": str(h / "Music/Ableton/Projects/Song Project"), "action": "trash"}], self.cfg)
+        self.assertEqual([r["ok"] for r in res], [True, True])
+
+    def test_grouped_trash_undoes_in_one_go(self):
+        folder = self.home / "Samples"
+        for i in range(5):
+            (folder / f"s{i}.wav.asd").parent.mkdir(exist_ok=True)
+            (folder / f"s{i}.wav.asd").write_text("x")
+        (folder / "s0.wav").write_text("audio")
+        res = purge.trash_asd(str(folder), self.cfg)
+        self.assertTrue(res[0]["ok"])
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["s0.wav"])
+        self.assertEqual(len([e for e in actions.history() if not e["undone"]]), 1)
+        actions.undo(res[0]["id"])
+        self.assertEqual(len(list(folder.glob("*.asd"))), 5)
+
+    def test_preflight_rechecks_at_click_time(self):
+        from macclean import safety
+        self.assertIsNone(safety.preflight(None, str(self.f), "trash", {"mtime": self.f.stat().st_mtime, "size": 1}))
+        self.assertIn("changed", safety.preflight(None, str(self.f), "trash", {"mtime": 0, "size": 1}))
+        self.assertIsNone(safety.preflight(None, str(self.f), "move", {"mtime": 0, "size": 1}))
 
     def test_icloud_drive_shorthand_expands(self):
         p = config.expand("iCloud Drive/Documents/2026", self.cfg)

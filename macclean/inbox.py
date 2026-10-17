@@ -12,7 +12,7 @@ import time
 from collections import Counter
 from datetime import datetime
 
-from . import classify, config
+from . import classify, config, safety
 
 FOLDER_SIZE_FILE_LIMIT = 20000
 
@@ -83,6 +83,10 @@ def describe(path: str) -> dict:
 
 def _matches(rule: dict, item: dict) -> bool:
     w = rule.get("when", {})
+    if rule.get("enabled") is False:
+        return False
+    if rule.get("action") == "trash" and item["kind"] != "file":
+        return False  # a folder may hold things worth keeping (license keys, manuals...)
     if "category" in w and item["category"] not in w["category"]:
         return False
     if "ext" in w and item["ext"] not in [e.lower() for e in w["ext"]]:
@@ -106,6 +110,8 @@ def suggest(item: dict, cfg: dict) -> dict | None:
         except re.error:
             continue
         sug = {"rule": rule.get("name", ""), "action": rule["action"], "auto": bool(rule.get("auto"))}
+        if rule["action"] == "trash":
+            sug["risk"] = rule.get("risk", "review")
         if rule["action"] == "move":
             dt = datetime.fromtimestamp(item["mtime"])
             sug["dest"] = str(config.expand(rule["dest"], cfg, year=dt.year, month=f"{dt.month:02d}",
@@ -114,30 +120,40 @@ def suggest(item: dict, cfg: dict) -> dict | None:
     return None
 
 
-def _sibling_extracted(item: dict, names: set) -> bool:
+def _extracted_copy(item: dict, inbox: str):
+    """For an archive with a same-named folder next to it: 'match', 'differs' or None."""
     if item["category"] != "archive" or item["is_dir"]:
-        return False
+        return None
     stem = item["name"]
     for ext in (".tar.gz", ".tar.bz2", ".tar.xz") + (item["ext"],):
         if stem.lower().endswith(ext):
             stem = stem[: -len(ext)]
             break
-    return stem in names
+    folder = os.path.join(inbox, stem)
+    if not os.path.isdir(folder):
+        return None
+    from .purge import archive_matches_folder
+    return "match" if archive_matches_folder(item["path"], folder) else "differs"
 
 
 def mark_used_by_sets(data: dict, con) -> None:
-    """Flag inbox items containing files an Ableton set elsewhere depends on."""
+    """Items containing files an Ableton set elsewhere depends on are kept where
+    they are, whatever the rules say: moving them would break the set."""
     if con is None:
         return
-    refs = con.execute("SELECT ref_path, set_path FROM ableton_refs").fetchall()
+    refs = [(safety.norm(r["ref_path"]), r["set_path"])
+            for r in con.execute("SELECT ref_path, set_path FROM ableton_refs")]
     for ib in data["inboxes"]:
         for item in ib["items"]:
-            p = item["path"]
-            users = sorted({r["set_path"] for r in refs
-                            if (r["ref_path"] == p or r["ref_path"].startswith(p + os.sep))
-                            and not r["set_path"].startswith(p + os.sep)})
+            p = safety.norm(item["path"])
+            users = sorted({s for ref, s in refs
+                            if (ref == p or ref.startswith(p + "/")) and not safety.norm(s).startswith(p + "/")})
             if users:
                 item["used_by"] = users
+                name = os.path.basename(users[0])
+                item["suggestion"] = {"rule": "Used by an Ableton set", "action": "keep", "auto": False,
+                                      "reason": f"{name} uses it. Open that set in Live and use File → Collect All "
+                                                "and Save, then it can be moved"}
 
 
 def list_inboxes(cfg: dict | None = None) -> dict:
@@ -155,19 +171,19 @@ def list_inboxes(cfg: dict | None = None) -> dict:
             except OSError as e:
                 out.append({"path": str(inbox), "error": str(e), "items": []})
                 continue
-            names = {e.name for e in entries}
             for e in entries:
                 try:
                     item = describe(e.path)
                 except OSError:
                     continue
                 item["stale"] = item["age_days"] >= stale
+                extracted = _extracted_copy(item, str(inbox))
                 if is_active and not item["stale"]:
                     item["suggestion"] = {"rule": "Still active", "action": "keep", "auto": False,
                                           "reason": f"touched in the last {int(stale)} days"}
-                elif _sibling_extracted(item, names):
+                elif extracted == "match":
                     item["suggestion"] = {"rule": "Already unzipped", "action": "trash", "auto": False,
-                                          "reason": "a folder with the same name sits next to it"}
+                                          "risk": "safe", "reason": "everything in it is in the folder next to it"}
                 else:
                     item["suggestion"] = suggest(item, cfg)
                 items.append(item)
