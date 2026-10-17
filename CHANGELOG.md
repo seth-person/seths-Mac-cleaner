@@ -2,6 +2,12 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.4.0
+
+- Mac Cleaner now has a new signing key. Updates are only installed if they're signed with it, so nobody else can push a fake update to your Mac.
+- Because of the new key, macOS asks once more for permissions you'd already granted (folder access, Full Disk Access). It won't ask again after future updates.
+- Installing and updating no longer need a GitHub token once the project is public.
+
 ## 0.3.1
 
 - If macOS ever blocks Mac Cleaner from replacing itself during an update, the app now says so when it reopens and tells you which setting to allow (Privacy & Security → App Management). Before, it would quietly keep the old version.
