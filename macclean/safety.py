@@ -57,6 +57,31 @@ def used_by_sets(con) -> dict:
     return out
 
 
+class UsedIndex:
+    """Which files and folders Ableton sets depend on. Build once per request:
+    looking up a file or a folder is then a single dictionary hit."""
+
+    def __init__(self, con):
+        self.files = {}    # norm(file) -> set paths using it
+        self.folders = {}  # norm(folder) -> set paths using something inside it
+        if con is None:
+            return
+        for r in con.execute("SELECT ref_path, set_path FROM ableton_refs"):
+            n = norm(r["ref_path"])
+            self.files.setdefault(n, set()).add(r["set_path"])
+            d = os.path.dirname(n)
+            while d and d != os.path.dirname(d):
+                self.folders.setdefault(d, set()).add(r["set_path"])
+                d = os.path.dirname(d)
+
+    def users(self, path: str) -> list:
+        """Sets *outside* `path` that use it or anything inside it. (A project
+        folder's own sets don't count: they move or go with it.)"""
+        n = norm(path)
+        sets = self.files.get(n, set()) | self.folders.get(n, set())
+        return sorted(s for s in sets if not norm(s).startswith(n + "/"))
+
+
 def project_dirs(con) -> list:
     if con is None:
         return []
@@ -84,7 +109,9 @@ _PROTECTED_SUFFIXES = (".photoslibrary", ".musiclibrary", ".tvlibrary", ".imovie
 
 def protected_reason(path: str, cfg: dict) -> str | None:
     h = os.path.realpath(config.home())
-    real = os.path.realpath(path)
+    # A symlink is just a link: judge the link itself, not what it points at.
+    real = os.path.join(os.path.realpath(os.path.dirname(os.path.abspath(path))), os.path.basename(path)) \
+        if os.path.islink(path) else os.path.realpath(path)
     parent = os.path.dirname(real)
     lib = os.path.join(h, "Library")
     tops = {h, lib, *(os.path.join(h, d) for d in ("Desktop", "Downloads", "Documents", "Music", "Pictures",
@@ -96,6 +123,8 @@ def protected_reason(path: str, cfg: dict) -> str | None:
         return "is a main folder"
     if parent == lib:
         return "holds macOS and app data"
+    if parent == os.path.realpath(config.expand(cfg["cloud_root"], cfg)) and os.path.isdir(real):
+        return "is a main folder in iCloud Drive"
     if any(parent == os.path.join(lib, d) for d in _LIBRARY_DATA_ROOTS):
         return "holds an app's settings or data"
     music_ableton = os.path.join(h, "Music", "Ableton")
@@ -106,14 +135,17 @@ def protected_reason(path: str, cfg: dict) -> str | None:
     return None
 
 
-def preflight(con, path: str, action: str, scanned: dict | None = None) -> str | None:
-    """Last check before trashing: still the same file, and nothing uses it?"""
-    if action not in ("trash", "trash-asd"):
+def preflight(index: UsedIndex, path: str, action: str, scanned: dict | None = None) -> str | None:
+    """Last check before a trash or move: nothing outside uses it, and it's
+    still the same file the scan saw."""
+    if action not in ("trash", "trash-asd", "move"):
         return None
-    used = used_by_sets(con)
-    if norm(path) in used:
-        return f"an Ableton set uses it ({os.path.basename(used[norm(path)])})"
-    if scanned and os.path.isfile(path):
+    users = index.users(path)
+    if users:
+        verb = "moving" if action == "move" else "trashing"
+        return (f"{os.path.basename(users[0])} uses {'it' if os.path.isfile(path) else 'files in it'}; "
+                f"{verb} it would break that set")
+    if action != "move" and scanned and os.path.isfile(path):
         try:
             st = os.stat(path)
         except OSError:

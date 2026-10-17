@@ -83,6 +83,14 @@ const CAT_LABEL = { audio: "Audio", ableton: "Ableton", plugin: "Plugin", video:
   document: "Document", app: "App", installer: "Installer", archive: "Archive", code: "Code",
   library: "App data", system: "System", other: "Other", folder: "Folder" };
 
+function toastAction(msg, label, fn, ms = 8000) {
+  const t = $("#toast");
+  t.replaceChildren(h("span", {}, msg, " "), h("button", { class: "btn small", onclick: () => { t.hidden = true; fn(); } }, label));
+  t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.hidden = true), ms);
+}
+
 function toast(msg, ms = 4000) {
   const t = $("#toast");
   t.textContent = msg;
@@ -220,7 +228,7 @@ function renderDisk() {
   const d = STATUS.disk;
   $("#disk").replaceChildren(
     h("div", { class: "label" },
-      h("span", {}, h("b", {}, fmt.size(d.used)), " used of ", fmt.size(d.total)),
+      h("span", {}, "Disk: ", h("b", {}, fmt.size(d.used)), " used of ", fmt.size(d.total)),
       h("span", { class: "ink2" }, fmt.size(d.free), " free")),
     h("div", { class: "bar", title: `${fmt.pct(d.used, d.total)} full` },
       h("span", { style: { width: fmt.pct(d.used, d.total) } })));
@@ -301,7 +309,7 @@ VIEWS.overview = async (root) => {
     h("p", { class: "lead" },
       safe ? [h("b", {}, fmt.size(safe)), " is ready to clean up"] : "Nothing is ready to clean up right away",
       review ? [", and ", h("b", {}, fmt.size(review)), " more is worth a look"] : "",
-      ". ", h("b", {}, `${ibCount} item${ibCount === 1 ? "" : "s"}`), " are sitting in Downloads and Desktop",
+      ". ", h("b", {}, `${ibCount} item${ibCount === 1 ? "" : "s"}`), ibCount === 1 ? " is" : " are", " sitting in Downloads and Desktop",
       ibStale ? [`, ${ibStale} of them untouched for ${inbox.stale_days}+ days`] : "", "."),
     h("div", { class: "toolbar", style: { margin: 0 } },
       h("a", { class: "btn primary", href: "#cleanup" }, "Start cleanup"),
@@ -309,7 +317,7 @@ VIEWS.overview = async (root) => {
       t.needs_collect || t.outside_library ? h("a", { class: "btn", href: "#music" }, "Tidy Ableton projects") : null));
 
   const tiles = h("div", { class: "grid tiles" },
-    tile("Space used by your files", fmt.size(m.total_alloc), `${fmt.count(m.total_files)} files`),
+    tile(JSON.parse(m.roots || "[]")[0] === HOME ? "Your home folder" : "Scanned", fmt.size(m.total_alloc), `${fmt.count(m.total_files)} files`),
     tile("Catch-alls", `${ibCount} items`, `${fmt.size(ibSize)} · ${ibStale} untouched ${inbox.stale_days}+ days`, () => (location.hash = "#inbox")),
     tile("Ready to clean", fmt.size(safe), `+ ${fmt.size(review)} to check first`, () => (location.hash = "#cleanup")),
     tile("Ableton projects", fmt.count(t.projects),
@@ -675,14 +683,17 @@ VIEWS.inbox = async (root) => {
       h("tbody", {}, rows)) : h("p", { class: "muted" }, "Nothing here matches this filter."));
   });
 
+  // Quick-select: moves, or trash that's Safe. "Check first" trash is ticked by hand.
+  const picks = (action) => checkboxes.filter((cb) => {
+    const sg = cb._item.suggestion;
+    return sg && sg.action === action && !cb._item.used_by && (action !== "trash" || sg.risk === "safe");
+  });
   const selectSuggested = (action) => {
-    for (const cb of checkboxes) {
-      const sg = cb._item.suggestion;
-      if (sg && sg.action === action && !cb._item.used_by) { cb.checked = true; selected.add(cb._item.path); }
-    }
+    for (const cb of picks(action)) { cb.checked = true; selected.add(cb._item.path); }
     updateBar();
   };
-  const count = (action) => checkboxes.filter((cb) => cb._item.suggestion && cb._item.suggestion.action === action && !cb._item.used_by).length;
+  const count = (action) => picks(action).length;
+  const checkFirst = checkboxes.filter((cb) => cb._item.suggestion && cb._item.suggestion.action === "trash" && cb._item.suggestion.risk !== "safe").length;
 
   root.replaceChildren(
     h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Catch-alls"),
@@ -690,7 +701,9 @@ VIEWS.inbox = async (root) => {
     h("div", { class: "spacer" })),
     h("div", { class: "toolbar" }, seg, h("div", { class: "spacer" }),
       count("move") ? h("button", { class: "btn", onclick: () => selectSuggested("move") }, `Select ${count("move")} suggested moves`) : null,
-      count("trash") ? h("button", { class: "btn", onclick: () => selectSuggested("trash") }, `Select ${count("trash")} suggested for Trash`) : null,
+      count("trash") ? h("button", { class: "btn", onclick: () => selectSuggested("trash"),
+        title: checkFirst ? `${checkFirst} more marked "Check first": tick those yourself` : null },
+      `Select ${count("trash")} safe for Trash`) : null,
       h("a", { class: "btn", href: "#rules" }, "Edit rules")),
     datalist, h("div", { class: "stack" }, sections));
 };
@@ -748,7 +761,8 @@ VIEWS.cleanup = async (root) => {
           h("td", { class: "check" }, cb),
           h("td", { class: "name" }, h("span", { class: "trunc", title: f.title }, f.title),
             h("span", { class: "trunc path", title: f.path }, pretty(f.path))),
-          h("td", { style: { width: "104px" } }, f.action ? riskPill(f.risk) : null),
+          h("td", { style: { width: "104px" } }, f.action ? riskPill(f.risk)
+            : f.kind === "dupe" ? h("a", { class: "chip", href: "#music", title: "See the project in Music" }, "Keep both") : null),
           h("td", { class: "ink2", style: { width: "40%" } }, f.why),
           h("td", { class: "num", style: { width: "80px" } }, fmt.size(f.alloc)),
           h("td", {}, h("button", { class: "btn small", onclick: () => reveal(f.path) }, "Show")));
@@ -918,9 +932,13 @@ VIEWS.rules = async (root) => {
     if (w.larger_than_mb) bits.push(`bigger than ${w.larger_than_mb} MB`);
     return bits.join(" ");
   };
-  const save = async (next) => {
+  const before = JSON.parse(JSON.stringify(cfg));
+  const save = async (next, undoable = true) => {
     const r = await post("/api/config", { config: next });
-    if (r.ok) { toast("Saved. Catch-alls uses the new rules straight away."); route(); } else toast(r.error);
+    if (!r.ok) return toast(r.error);
+    route();
+    if (undoable) toastAction("Saved. Catch-alls uses the new rules straight away.", "Undo", () => save(before, false));
+    else toast("Change undone.");
   };
   const rows = cfg.rules.map((r, i) => {
     const w = r.when || {};
@@ -931,7 +949,7 @@ VIEWS.rules = async (root) => {
       days = h("input", { type: "number", min: 0, value: w.older_than_days, style: { width: "56px" },
         "aria-label": "Days", onchange: () => { cfg.rules[i].when.older_than_days = Number(days.value) || 0; save(cfg); } });
     }
-    const then = r.action === "move" ? ["move them to ", h("b", {}, pretty(r.dest.replace("{cloud}", HOME + ICLOUD_REL).replace("{ableton}", "iCloud Drive/Ableton Projects").replace("{year}", "‹year›").replace("{month}", "‹month›")))]
+    const then = r.action === "move" ? ["move them to ", h("b", {}, pretty(r.dest.replace("{ableton}", data.ableton_path).replace("{cloud}", data.cloud_path).replace("{year}", "‹year›").replace("{month}", "‹month›")))]
       : r.action === "trash" ? ["suggest the Trash ", riskPill(r.risk || "review")] : ["leave them"];
     return h("tr", { class: r.enabled === false ? "off" : "" },
       h("td", { class: "check" }, on),

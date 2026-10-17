@@ -50,7 +50,11 @@ PLUGIN_VENDORS = (r"(fabfilter|native.?instruments|native.?access|komplete|konta
 # "enabled": false switches a rule off. Trash rules only ever match single
 # files (never folders), and their "risk" ("safe"/"review") is shown next to
 # the suggestion.
+# Bump when the default rules change, so saved settings pick up the new ones.
+RULES_VERSION = 2
+
 DEFAULT_CONFIG = {
+    "rules_version": RULES_VERSION,
     "inboxes": ["~/Downloads", "~/Desktop"],
     # Inboxes you actively work out of: items there are left alone until stale.
     "active_inboxes": ["~/Desktop"],
@@ -71,7 +75,7 @@ DEFAULT_CONFIG = {
         {"name": "Unfinished downloads", "when": {"kind": ["file"], "ext": [".crdownload", ".download", ".part", ".partial"], "older_than_days": 2},
          "action": "trash", "risk": "safe", "auto": False},
         {"name": "Plugin & instrument installers",
-         "when": {"category": ["installer", "archive"], "name_regex": PLUGIN_VENDORS},
+         "when": {"category": ["installer"], "name_regex": PLUGIN_VENDORS},
          "action": "move", "dest": "{cloud}/Music/Plugin Installers"},
         {"name": "Installers already used", "when": {"kind": ["file"], "category": ["installer"], "older_than_days": 14},
          "action": "trash", "risk": "review", "auto": False},
@@ -109,10 +113,38 @@ def load_config() -> dict:
     if p.exists():
         try:
             user = json.loads(p.read_text())
-            cfg.update(user)
         except (OSError, ValueError):
-            pass
+            return cfg
+        if user.get("rules_version", 0) < RULES_VERSION:
+            user["rules"] = migrate_rules(user.get("rules", []))
+            user["rules_version"] = RULES_VERSION
+        cfg.update(user)
     return cfg
+
+
+def migrate_rules(saved: list) -> list:
+    """New default rules replace old ones, keeping what the person changed:
+    on/off, day counts, destinations and "auto" for rules with the same name,
+    plus any rules they wrote themselves (added at the end)."""
+    defaults = copy.deepcopy(DEFAULT_CONFIG["rules"])
+    default_names = {r["name"] for r in defaults}
+    old_defaults = {"Installers already used", "Old screenshots", "Unfinished downloads"}  # behaviour changed
+    by_name = {r.get("name"): r for r in saved}
+    for r in defaults:
+        mine = by_name.get(r["name"])
+        if not mine:
+            continue
+        if "enabled" in mine:
+            r["enabled"] = mine["enabled"]
+        if mine.get("auto") and r["action"] != "trash":
+            r["auto"] = True
+        if r["action"] == "move" and mine.get("action") == "move" and mine.get("dest"):
+            r["dest"] = mine["dest"]
+        days = (mine.get("when") or {}).get("older_than_days")
+        if days is not None and "older_than_days" in r["when"] and r["name"] not in old_defaults:
+            r["when"]["older_than_days"] = days
+    custom = [r for r in saved if r.get("name") not in default_names]
+    return defaults + custom
 
 
 def save_config(cfg: dict) -> None:

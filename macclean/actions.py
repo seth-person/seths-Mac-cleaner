@@ -85,24 +85,28 @@ def trash(src, cfg: dict | None = None, dry_run: bool = False, note: str = "") -
 
 
 def trash_group(paths: list, label: str, cfg: dict | None = None) -> dict:
-    """Trash several files into one folder in the Trash, logged (and undone) as one action."""
+    """Trash several files into one (visible) folder in the Trash, logged and
+    undone as a single action."""
     cfg = cfg or config.load_config()
     srcs = [_check_source(Path(p), cfg) for p in paths]
     folder = _unique(config.home() / ".Trash" / label)
     folder.mkdir(parents=True)
-    moved = []
-    try:
-        for src in srcs:
+    moved, error = [], None
+    for src in srcs:
+        try:
             dst = _unique(folder / src.name)
             shutil.move(str(src), str(dst))
             moved.append([str(src), str(dst)])
-    finally:
-        if moved:
-            entry = _log({"op": "trash", "src": os.path.dirname(moved[0][0]), "dst": str(folder),
-                          "items": moved, "note": f"{len(moved)} files"})
+        except OSError as e:
+            error = e
+            break
     if not moved:
         folder.rmdir()
-        raise ActionError("Nothing was moved")
+        raise ActionError(f"Nothing was moved: {error}")
+    entry = _log({"op": "trash", "src": os.path.dirname(moved[0][0]), "dst": str(folder),
+                  "items": moved, "note": f"{len(moved)} files"})
+    if error:
+        entry = dict(entry, partial=f"{len(moved)} of {len(srcs)} moved before an error: {error}")
     return entry
 
 

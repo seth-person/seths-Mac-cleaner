@@ -183,6 +183,40 @@ class PurgeTests(FakeHome):
         self.assertFalse(any("User Library" in x["path"] or "User Library" in x.get("keep", "")
                              for x in purge.findings(self.con, self.cfg)))
 
+    def test_duplicate_used_from_downloads_keeps_both(self):
+        f = self.findings()
+        d = f[("dupe", "song a master.wav")]
+        self.assertIsNone(d["action"])  # nothing to trash until Collect All
+        self.assertIn("Keep both", d["why"])
+
+    def test_catchalls_and_cleanup_agree_on_duplicates(self):
+        data = inbox.list_inboxes(self.cfg)
+        inbox.mark_used_by_sets(data, self.con, self.cfg)
+        item = next(i for ib in data["inboxes"] for i in ib["items"] if i["name"] == "report copy.pdf")
+        self.assertEqual(item["suggestion"]["action"], "trash")
+        self.assertIn("Documents/report.pdf", item["suggestion"]["reason"])
+
+    def test_edited_sample_makes_archive_check_first(self):
+        wav = self.home / "Downloads" / "Drum Pack Vol 2" / "kick_0.wav"
+        data = bytearray(wav.read_bytes())
+        data[100] ^= 0xFF  # same size, different audio
+        wav.write_bytes(bytes(data))
+        os.utime(wav, (wav.stat().st_atime, wav.stat().st_mtime + 5))  # as any edit would
+        try:
+            self.assertEqual(self.findings()[("archive", "Drum Pack Vol 2.zip")]["risk"], "review")
+        finally:
+            data[100] ^= 0xFF
+            wav.write_bytes(bytes(data))
+
+    def test_folder_with_used_samples_is_blocked_at_click_time(self):
+        from macclean import safety
+        idx = safety.UsedIndex(self.con)
+        old_song = self.home / "Downloads" / "Old Song Project"
+        vocal = self.home / "Downloads" / "vocal chop.wav"
+        self.assertIn("Old Song", safety.preflight(idx, str(vocal), "move"))
+        self.assertIn("Old Song", safety.preflight(idx, str(vocal), "trash"))
+        self.assertIsNone(safety.preflight(idx, str(old_song), "move"))  # its own set moves with it
+
     def test_unreadable_sets_suppress_audio_duplicates(self):
         self.con.execute("INSERT INTO ableton_sets (path, error) VALUES ('/x/y.als', 'Only in iCloud')")
         try:
@@ -273,6 +307,7 @@ class ActionTests(unittest.TestCase):
         (folder / "s0.wav").write_text("audio")
         res = purge.trash_asd(str(folder), self.cfg)
         self.assertTrue(res[0]["ok"])
+        self.assertFalse(Path(res[0]["dst"]).name.startswith("."))  # visible in Finder
         self.assertEqual(sorted(p.name for p in folder.iterdir()), ["s0.wav"])
         self.assertEqual(len([e for e in actions.history() if not e["undone"]]), 1)
         actions.undo(res[0]["id"])
@@ -280,9 +315,34 @@ class ActionTests(unittest.TestCase):
 
     def test_preflight_rechecks_at_click_time(self):
         from macclean import safety
-        self.assertIsNone(safety.preflight(None, str(self.f), "trash", {"mtime": self.f.stat().st_mtime, "size": 1}))
-        self.assertIn("changed", safety.preflight(None, str(self.f), "trash", {"mtime": 0, "size": 1}))
-        self.assertIsNone(safety.preflight(None, str(self.f), "move", {"mtime": 0, "size": 1}))
+        idx = safety.UsedIndex(None)
+        self.assertIsNone(safety.preflight(idx, str(self.f), "trash", {"mtime": self.f.stat().st_mtime, "size": 1}))
+        self.assertIn("changed", safety.preflight(idx, str(self.f), "trash", {"mtime": 0, "size": 1}))
+        self.assertIsNone(safety.preflight(idx, str(self.f), "move", {"mtime": 0, "size": 1}))
+
+    def test_icloud_main_folders_and_symlinks(self):
+        cloud = self.home / config.ICLOUD_REL
+        (cloud / "Documents").mkdir(parents=True)
+        (cloud / "loose.pdf").write_text("x")
+        res = actions.apply([{"path": str(cloud / "Documents"), "action": "trash"},
+                             {"path": str(cloud / "loose.pdf"), "action": "trash"}], self.cfg)
+        self.assertEqual([r["ok"] for r in res], [False, True])
+        (self.home / "Documents").mkdir()
+        link = self.home / "Downloads" / "docs link"
+        os.symlink(self.home / "Documents", link)
+        self.assertTrue(actions.apply([{"path": str(link), "action": "trash"}], self.cfg)[0]["ok"])
+        self.assertTrue((self.home / "Documents").is_dir())
+
+    def test_saved_settings_get_new_default_rules(self):
+        old = [{"name": "Old screenshots", "when": {"older_than_days": 14}, "action": "trash"},
+               {"name": "Images", "when": {"category": ["image"]}, "action": "move", "dest": "~/Pics", "enabled": False},
+               {"name": "My own rule", "when": {"ext": [".mid"]}, "action": "move", "dest": "~/MIDI"}]
+        config.config_path().write_text(json.dumps({"inboxes": ["~/Downloads"], "rules": old}))
+        rules = {r["name"]: r for r in config.load_config()["rules"]}
+        self.assertEqual(rules["Old screenshots"]["action"], "move")  # the risky old default is gone
+        self.assertEqual((rules["Images"]["dest"], rules["Images"]["enabled"]), ("~/Pics", False))  # kept edits
+        self.assertIn("My own rule", rules)
+        self.assertIn("Plugin & instrument installers", rules)
 
     def test_icloud_drive_shorthand_expands(self):
         p = config.expand("iCloud Drive/Documents/2026", self.cfg)

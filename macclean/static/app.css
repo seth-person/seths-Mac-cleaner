@@ -151,7 +151,7 @@ td.check, th.check { width: 24px; padding-right: 0; }
 
 .sugg { display: flex; gap: 6px; align-items: center; min-width: 0; }
 .sugg select { flex: none; }
-.sugg input { flex: 1; min-width: 120px; }
+.sugg input { flex: 1; min-width: 220px; }
 .warn { color: var(--ink); background: color-mix(in srgb, var(--warning) 18%, transparent);
   border-left: 3px solid var(--warning); padding: 6px 10px; border-radius: 4px; font-size: 12px; margin: 4px 0; }
 .note { background: var(--surface-2); padding: 10px 12px; border-radius: 8px; color: var(--ink-2); }

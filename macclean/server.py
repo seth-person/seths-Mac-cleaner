@@ -96,7 +96,7 @@ def api_inbox(q):
     cfg = config.load_config()
     con = _con()
     data = inbox.list_inboxes(cfg)
-    inbox.mark_used_by_sets(data, con)
+    inbox.mark_used_by_sets(data, con, cfg)
     data["destinations"] = inbox.destinations(con, cfg)
     return data
 
@@ -123,7 +123,10 @@ def api_ableton(q):
 
 
 def api_config(q):
-    return {"config": config.load_config(), "path": str(config.config_path()),
+    cfg = config.load_config()
+    return {"config": cfg, "path": str(config.config_path()),
+            "cloud_path": str(config.expand(cfg["cloud_root"], cfg)),
+            "ableton_path": str(config.expand(cfg["ableton_root"], cfg)),
             "defaults": config.DEFAULT_CONFIG}
 
 
@@ -215,6 +218,7 @@ def post_cancel(body):
 def post_apply(body):
     cfg = config.load_config()
     con = _con()
+    used = safety.UsedIndex(con)
     plain, results = [], []
     for it in body.get("items", []):
         # The scan may be out of date: re-check every trash at the moment of the click.
@@ -222,7 +226,7 @@ def post_apply(body):
         if con is not None:
             row = con.execute("SELECT size, mtime FROM files WHERE path=?", (it.get("path"),)).fetchone()
             scanned = dict(row) if row else None
-        problem = safety.preflight(con, it.get("path", ""), it.get("action", ""), scanned)
+        problem = safety.preflight(used, it.get("path", ""), it.get("action", ""), scanned)
         if problem:
             results.append({"ok": False, "path": it.get("path"), "error": f"Skipped: {problem}"})
         elif it.get("action") == "trash-asd":

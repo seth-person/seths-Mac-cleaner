@@ -136,24 +136,29 @@ def _extracted_copy(item: dict, inbox: str):
     return "match" if archive_matches_folder(item["path"], folder) else "differs"
 
 
-def mark_used_by_sets(data: dict, con) -> None:
-    """Items containing files an Ableton set elsewhere depends on are kept where
-    they are, whatever the rules say: moving them would break the set."""
+def mark_used_by_sets(data: dict, con, cfg: dict | None = None) -> None:
+    """Items an Ableton set elsewhere depends on are kept where they are,
+    whatever the rules say: moving them would break the set. Duplicates of
+    something already filed are suggested for the Trash instead of a move."""
     if con is None:
         return
-    refs = [(safety.norm(r["ref_path"]), r["set_path"])
-            for r in con.execute("SELECT ref_path, set_path FROM ableton_refs")]
+    from .purge import dupe_plan
+    used = safety.UsedIndex(con)
+    dupes = dupe_plan(con, cfg or config.load_config(), used)
     for ib in data["inboxes"]:
         for item in ib["items"]:
-            p = safety.norm(item["path"])
-            users = sorted({s for ref, s in refs
-                            if (ref == p or ref.startswith(p + "/")) and not safety.norm(s).startswith(p + "/")})
+            users = used.users(item["path"])
             if users:
                 item["used_by"] = users
                 name = os.path.basename(users[0])
                 item["suggestion"] = {"rule": "Used by an Ableton set", "action": "keep", "auto": False,
                                       "reason": f"{name} uses it. Open that set in Live and use File → Collect All "
                                                 "and Save, then it can be moved"}
+                continue
+            d = dupes.get(item["path"])
+            if d and d["trashable"]:
+                item["suggestion"] = {"rule": "Duplicate", "action": "trash", "auto": False, "risk": "review",
+                                      "reason": f"an identical copy is already in {d['keep_short']}"}
 
 
 def list_inboxes(cfg: dict | None = None) -> dict:
