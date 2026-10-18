@@ -889,40 +889,66 @@ function collectView(root, data, head) {
   const needs = data.projects.filter((p) => p.status === "external" || p.status === "missing");
   const unchecked = data.projects.filter((p) => p.status === "unknown");
   const loose = data.loose_sets.filter((s) => s.external || s.missing);
-  const recheck = async (p, btn) => {
+  const countEl = h("h2", {}, "");
+  const setCount = () => {
+    const n = needs.filter((p) => p.status === "external" || p.status === "missing").length;
+    countEl.textContent = n ? `${n} project${n === 1 ? "" : "s"} to collect` : "All collected";
+    const tab = document.querySelector(".seg button.on");
+    if (tab) tab.textContent = n ? `Collect All (${n})` : "Collect All";
+  };
+  // Re-reads one project and swaps in its new row: no page reload, so you stay where you were.
+  const recheck = async (p, row, btn) => {
     btn.disabled = true;
-    btn.textContent = "Checking…";
+    btn.replaceChildren(h("span", { class: "spinner", "aria-hidden": "true" }), "Checking…");
+    row.classList.add("busy");
     try {
       const r = await post("/api/ableton/recheck", { project: p.path });
       if (!r.ok) { toast(r.error); return; }
+      if (r.item) {
+        needs[needs.indexOf(p)] = r.item;
+        row.replaceWith(collectRow(r.item, true));
+        setCount();
+      }
       const ext = r.sets.reduce((a, s) => a + (s.external || 0), 0);
       const miss = r.sets.reduce((a, s) => a + (s.missing || 0), 0);
       toast(r.status === "ok" ? `${projName(p)} is self-contained now.`
         : r.status === "unknown" ? `Some sets in ${projName(p)} couldn't be read.`
           : `${projName(p)} still has ${ext ? `${ext} file${ext === 1 ? "" : "s"} outside the project` : ""}${ext && miss ? " and " : ""}${miss ? `${miss} missing` : ""}.`, 6000);
-      route();
+    } catch (e) {
+      toast(e.message);
     } finally {
-      btn.disabled = false;
-      btn.textContent = "Re-check";
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.textContent = "Re-check";
+        row.classList.remove("busy");
+      }
     }
   };
   const examples = (s) => [
     (s.examples.external || []).length ? h("div", { class: "path" }, "Elsewhere: ", s.examples.external.map(pretty).join(" · ")) : null,
-    (s.examples.missing || []).length ? h("div", { class: "path" }, "Missing: ", s.examples.missing.map(pretty).join(" · ")) : null];
-  const rows = needs.map((p) => {
+    missingList(s)];
+  const collectRow = (p, justChecked) => {
     const sets = p.sets.filter((s) => s.external || s.missing);
+    const done = p.status === "ok";
     const btn = h("button", { class: "btn small", title: "Read the project again after you've collected it" }, "Re-check");
-    btn.onclick = () => recheck(p, btn);
-    return h("div", { class: "collect-row" },
+    const hasMissing = sets.some((s) => s.missing);
+    const row = h("div", { class: "collect-row" + (justChecked ? " checked" : "") },
       h("div", { class: "toolbar" }, starButton(p),
         h("div", { style: { minWidth: 0, flex: "1 1 240px" } }, h("b", {}, projName(p)), " ", h("span", { class: "ink2" }, fmt.ago(p.mtime) + " ago"),
           h("div", { class: "trunc path", title: p.path }, pretty(p.path))),
-        samplesStatus(p), finderButton(p), btn),
-      h("div", { class: "collect-sets" }, sets.map((s) => h("div", {},
+        done ? statusPill("good", "Self-contained now") : samplesStatus(p), finderButton(p),
+        hasMissing ? h("button", { class: "btn small", title: "Copy what Mac Cleaner found, to paste into a message",
+          onclick: () => copyDetails(p) }, "Copy details") : null,
+        done ? null : btn),
+      done ? null : h("div", { class: "collect-sets" }, sets.map((s) => h("div", {},
         h("span", {}, s.path.split("/").pop()), h("span", { class: "ink2" },
           ` — ${s.external ? `${s.external} outside the project` : ""}${s.external && s.missing ? ", " : ""}${s.missing ? `${s.missing} missing` : ""}`),
         examples(s)))));
-  });
+    btn.onclick = () => recheck(p, row, btn);
+    return row;
+  };
+  const rows = needs.map((p) => collectRow(p));
+  setCount();
   root.replaceChildren(head,
     h("div", { class: "card note", style: { marginBottom: "14px" } },
       h("h2", {}, "How to fix each one"),
@@ -930,9 +956,10 @@ function collectView(root, data, head) {
         h("li", {}, "Click ", h("b", {}, "Show in Finder"), " and double-click the set to open it in Live."),
         h("li", {}, data.collect_steps),
         h("li", {}, "Back here, click ", h("b", {}, "Re-check"), ". The project drops off this list once it's self-contained.")),
-      h("p", { class: "ink2" }, h("b", {}, "Missing"), " files are ones Live can't find at all (often old paths, or samples on a drive that isn't plugged in). ",
-        "Collect All can't copy those: in Live, open File Manager → Locate, or point it at the folder they're in, then Collect All and Save.")),
-    rows.length ? h("div", { class: "card" }, h("h2", {}, `${rows.length} project${rows.length === 1 ? "" : "s"} to collect`),
+      h("p", { class: "ink2" }, h("b", {}, "Missing"), " files are ones Mac Cleaner can't find (often old paths, or samples on a drive that isn't plugged in). ",
+        "Collect All can't copy those. To see whether Live agrees, open the set and choose File → Manage Files → Manage Set: it lists any missing files and has a Locate button. ",
+        "If Live says nothing is missing, Mac Cleaner got it wrong: click ", h("b", {}, "Copy details"), " and send it so it can be fixed.")),
+    rows.length ? h("div", { class: "card" }, countEl,
       h("p", { class: "ink2" }, "Newest first. These use samples from outside their project folder, so they could break if those files move."),
       h("div", { class: "stack" }, rows))
       : h("div", { class: "card empty" }, h("h2", {}, "Every project is self-contained"), h("p", {}, "Nothing to collect. Nice.")),
@@ -947,6 +974,47 @@ function collectView(root, data, head) {
       h("table", {}, h("tbody", {}, unchecked.map((p) => h("tr", {},
         h("td", { class: "name" }, h("span", { class: "trunc" }, projName(p)), h("span", { class: "trunc path" }, pretty(p.path))),
         h("td", { style: { width: "1%" } }, finderButton(p))))))) : "");
+}
+
+// Missing files, with where in the set each one is used (scans from 0.7.1 on).
+function missingList(s) {
+  const detail = s.examples.missing_detail;
+  if (detail && detail.length) {
+    return h("div", { class: "path" }, "Missing:", detail.map((d) => h("div", { class: "missing-item" },
+      pretty(d.path || d.rel), d.where ? h("span", { class: "muted" }, " — in " + d.where) : null)));
+  }
+  return (s.examples.missing || []).length ? h("div", { class: "path" }, "Missing: ", s.examples.missing.map(pretty).join(" · ")) : null;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    const ta = h("textarea", { style: { position: "fixed", opacity: "0" } }, text);
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
+async function copyDetails(p) {
+  const lines = [`Mac Cleaner ${STATUS ? STATUS.version : ""}: missing files in ${p.path}`];
+  for (const s of p.sets.filter((x) => x.missing)) {
+    lines.push("", `Set: ${s.path.split("/").pop()} (${s.version || "unknown Live version"}): ${s.missing} missing of ${s.refs}`);
+    const detail = s.examples.missing_detail;
+    if (!detail) { lines.push("  (rescan to get details)", ...(s.examples.missing || []).map((m) => "  " + m)); continue; }
+    for (const d of detail) {
+      lines.push(`- Path: ${d.path || "(none)"}`, `  RelativePath: ${d.rel || "(none)"}  RelativePathType: ${d.rel_type || "(none)"}`,
+        `  Pack: ${d.pack || "(none)"}`, `  In: ${d.where || "(unknown)"}`, `  XML: ${d.xml}`);
+    }
+  }
+  const text = lines.join("\n");
+  if (await copyText(text)) return toast("Copied. Paste it into a message.");
+  modal("Details", h("textarea", { class: "code", readonly: true, style: { width: "100%", height: "40vh" } }, text));
 }
 
 function statusPill(kind, label, title) {
@@ -1139,7 +1207,7 @@ function projectDetail(p) {
       h("b", {}, s.path.split("/").pop()), h("span", { class: "ink2" },
         s.error ? ` — ${s.error}` : ` — ${s.refs} files: ${s.in_project} in project, ${s.packs} from Packs, ${s.external} elsewhere, ${s.missing} missing`),
       (s.examples.external || []).length ? h("div", { class: "path" }, "Elsewhere: ", s.examples.external.map(pretty).join(" · ")) : null,
-      (s.examples.missing || []).length ? h("div", { class: "path" }, "Missing: ", s.examples.missing.map(pretty).join(" · ")) : null)));
+      missingList(s))));
 }
 
 // ------------------------------------------------------------------- rules

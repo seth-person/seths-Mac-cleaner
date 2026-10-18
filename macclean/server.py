@@ -137,9 +137,14 @@ def post_ableton_recheck(body):
     if not known:
         return {"ok": False, "error": "That isn't a project from the last scan. Rescan to pick it up."}
     try:
-        return {"ok": True, **ableton.recheck_project(con, body["project"])}
+        res = ableton.recheck_project(con, body["project"])
     except (OSError, KeyError) as e:
         return {"ok": False, "error": str(e)}
+    # The refreshed project, shaped like /api/ableton's, so the page can update just that row.
+    ov = ableton.overview(con, config.load_config())
+    res["item"] = next((p for p in ov["projects"] if p["path"] == body["project"]), None)
+    res["needs_collect"] = ov["totals"]["needs_collect"]
+    return {"ok": True, **res}
 
 
 def api_ableton(q):

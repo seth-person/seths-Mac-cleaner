@@ -35,6 +35,21 @@ _IGNORED_CONTEXTS = {"SourceContext", "OriginalFileRef", "LastPresetRef", "Prese
 _PACK_MARKERS = ("/Factory Packs/", "/Core Library/", "/Ableton/Packs/", "/App-Resources/")
 _BUILTIN_MARKERS = ("/Core Library/", "/App-Resources/")
 SET_EXT = ".als"
+
+# For saying where in a set a file is used ("Track “Vox” › Drum Rack pad “Kick” › Simpler").
+_TRACK_TAGS = {"AudioTrack": "Track", "MidiTrack": "Track", "GroupTrack": "Group track",
+               "ReturnTrack": "Return track", "MasterTrack": "Main track", "MainTrack": "Main track"}
+_PLACE_NAMES = {
+    "OriginalSimpler": "Simpler", "MultiSampler": "Sampler", "DrumCell": "Drum Sampler",
+    "DrumGroupDevice": "Drum Rack", "InstrumentGroupDevice": "Instrument Rack",
+    "AudioEffectGroupDevice": "Audio Effect Rack", "MidiEffectGroupDevice": "MIDI Effect Rack",
+    "InstrumentVector": "Wavetable", "Hybrid": "Hybrid Reverb", "Looper": "Looper",
+    "MxDeviceAudioEffect": "Max for Live device", "MxDeviceInstrument": "Max for Live device",
+    "MxDeviceMidiEffect": "Max for Live device", "PluginDevice": "plug-in", "AuPluginDevice": "plug-in",
+    "FreezeSequencer": "frozen-track audio", "TakeLanes": "take lane", "GroovePool": "groove pool",
+}
+_BRANCH_NAMES = {"DrumBranch": "pad", "InstrumentBranch": "chain", "AudioEffectBranch": "chain",
+                 "MidiEffectBranch": "chain"}
 PRESET_EXTS = (".adg", ".adv", ".alc", ".agr")
 
 # Shown wherever Mac Cleaner asks you to collect a project's files.
@@ -47,25 +62,47 @@ def parse_set(path: str) -> dict:
     refs = []
     version = ""
     stack = []
+    labels = []  # names of the tracks, chains and clips we're inside, parallel to stack
     cur = None
+
+    def where() -> str:
+        bits = []
+        for tag, label in zip(stack, labels):
+            if tag in _TRACK_TAGS:
+                bits.append(f"{_TRACK_TAGS[tag]} “{label}”" if label else _TRACK_TAGS[tag])
+            elif tag in _BRANCH_NAMES:
+                bits.append(f"{_BRANCH_NAMES[tag]} “{label}”" if label else _BRANCH_NAMES[tag])
+            elif tag == "AudioClip":
+                bits.append(f"clip “{label}”" if label else "audio clip")
+            elif tag in _PLACE_NAMES and (not bits or bits[-1] != _PLACE_NAMES[tag]):
+                bits.append(_PLACE_NAMES[tag])
+        return " › ".join(bits)
 
     def start(tag, attrs):
         nonlocal cur, version
         if not stack and tag == "Ableton":
             version = attrs.get("Creator", "")
         stack.append(tag)
+        labels.append("")
+        value = attrs.get("Value")
+        if value and tag == "EffectiveName" and len(stack) > 2 and stack[-2] == "Name" \
+                and (stack[-3] in _TRACK_TAGS or stack[-3] in _BRANCH_NAMES):
+            labels[-3] = value
+        elif value and tag == "Name" and len(stack) > 1 and stack[-2] == "AudioClip":
+            labels[-2] = value
         if tag == "FileRef" and cur is None and not _IGNORED_CONTEXTS.intersection(stack):
             cur = {"path": "", "rel": "", "rel_parts": [], "name": "", "pack": "", "pack_id": "",
-                   "depth": len(stack)}
+                   "rel_type": "", "depth": len(stack), "where": where(), "xml": "/".join(stack[1:])}
             return
         if cur is None:
             return
         parent = stack[-2] if len(stack) > 1 else ""
-        value = attrs.get("Value")
         if tag == "Path" and parent == "FileRef" and value:
             cur["path"] = value
         elif tag == "RelativePath" and value:
             cur["rel"] = value
+        elif tag == "RelativePathType" and value:
+            cur["rel_type"] = value
         elif tag == "RelativePathElement":
             cur["rel_parts"].append(attrs.get("Dir", "") or "..")
         elif tag == "Name" and parent == "FileRef" and value:
@@ -82,9 +119,11 @@ def parse_set(path: str) -> dict:
             if not rel and (cur["rel_parts"] or cur["name"]):
                 rel = "/".join(cur["rel_parts"] + ([cur["name"]] if cur["name"] else []))
             if rel or cur["path"]:
-                refs.append({"path": cur["path"], "rel": rel, "pack": cur["pack"], "pack_id": cur["pack_id"]})
+                refs.append({"path": cur["path"], "rel": rel, "pack": cur["pack"], "pack_id": cur["pack_id"],
+                             "rel_type": cur["rel_type"], "where": cur["where"], "xml": cur["xml"]})
             cur = None
         stack.pop()
+        labels.pop()
 
     parser = expat.ParserCreate()
     parser.StartElementHandler = start
@@ -99,6 +138,7 @@ def parse_set(path: str) -> dict:
         parser.EndElementHandler = end
         refs.clear()
         stack.clear()
+        labels.clear()
         cur = None
         with open(path, "rb") as f:
             parser.ParseFile(f)
@@ -151,7 +191,7 @@ def check_set(path: str, project_dir: str | None, packs: list | None = None) -> 
     parsed = parse_set(path)
     base = project_dir or os.path.dirname(path)
     counts = {"in_project": 0, "packs": 0, "external": 0, "missing": 0}
-    examples = {"external": [], "missing": []}
+    examples = {"external": [], "missing": [], "missing_detail": []}
     external = []
     used = []  # every file that resolved, wherever it is
     pack_refs = {}  # pack name -> resolved?
@@ -188,6 +228,7 @@ def check_set(path: str, project_dir: str | None, packs: list | None = None) -> 
             counts["missing"] += 1
             if len(examples["missing"]) < 8:
                 examples["missing"].append(shown)
+                examples["missing_detail"].append({k: ref[k] for k in ("path", "rel", "rel_type", "pack", "where", "xml")})
     return {"version": parsed["version"], "refs": len(seen), **counts, "examples": examples,
             "external_paths": external, "used_paths": used, "pack_refs": pack_refs}
 

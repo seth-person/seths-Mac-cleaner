@@ -2,6 +2,14 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.7.1
+
+- **Re-check no longer reloads the page.** The button shows a spinner while it reads the project, then updates just that project. You stay where you were on the list.
+- **Missing files now say where in the set they're used**, e.g. “in Track “Drums” › Drum Rack › pad “Kick” › Simpler”, so you can find them in Live.
+  - Click **Re-check** on a project (or rescan) to get this for sets scanned before this version.
+- **New: Copy details** on projects with missing files. It copies exactly what Mac Cleaner found, ready to paste into a message, for when Live says nothing is missing but Mac Cleaner disagrees.
+- The Collect All tab explains how to check in Live: File → Manage Files → Manage Set lists any missing files.
+
 ## 0.7.0
 
 - **Music is now Ableton**, with new tabs:

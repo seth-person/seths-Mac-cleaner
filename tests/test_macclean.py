@@ -380,6 +380,30 @@ class AbletonSectionTests(FakeHome):
         self.assertEqual(p["Song B Project"]["missing_total"], 1)
         self.assertEqual(p["Song A Project"]["status"], "ok")
 
+    def test_missing_files_say_where_in_the_set_they_are(self):
+        song_b = self.projects()["Song B Project"]
+        detail = song_b["sets"][0]["examples"]["missing_detail"]
+        self.assertEqual(len(detail), 1)
+        self.assertTrue(detail[0]["path"].endswith("Old Samples/gone.wav"))
+        self.assertEqual(detail[0]["rel_type"], "3")
+        self.assertIn("audio clip", detail[0]["where"])
+        self.assertIn("AudioClip/SampleRef/FileRef", detail[0]["xml"])
+
+    def test_where_names_tracks_pads_and_devices(self):
+        xml = (b'<?xml version="1.0" encoding="UTF-8"?><Ableton Creator="Ableton Live 12.1"><LiveSet><Tracks>'
+               b'<MidiTrack><Name><EffectiveName Value="Drums" /></Name><DeviceChain><Devices>'
+               b'<DrumGroupDevice><Branches><DrumBranch><Name><EffectiveName Value="Kick" /></Name>'
+               b'<DeviceChain><Devices><OriginalSimpler><Player><MultiSampleMap><SampleParts><MultiSamplePart>'
+               b'<SampleRef><FileRef><RelativePath Value="Samples/k.wav" /><Path Value="/x/k.wav" /></FileRef></SampleRef>'
+               b'</MultiSamplePart></SampleParts></MultiSampleMap></Player></OriginalSimpler></Devices></DeviceChain>'
+               b'</DrumBranch></Branches></DrumGroupDevice></Devices></DeviceChain></MidiTrack>'
+               b'<AudioTrack><Name><EffectiveName Value="Vox" /></Name></AudioTrack>'
+               b'</Tracks></LiveSet></Ableton>')
+        path = Path(self.tmp) / "where.als"
+        path.write_bytes(gzip.compress(xml))
+        ref = ableton.parse_set(str(path))["refs"][0]
+        self.assertEqual(ref["where"], "Track “Drums” › Drum Rack › pad “Kick” › Simpler")
+
     def test_recheck_after_collect_all(self):
         from macclean import safety
         proj = Path(self.projects()["Old Song Project"]["path"])
@@ -558,6 +582,8 @@ class ServerTests(FakeHome):
         r = self.req("/api/ableton/recheck", {"project": song["path"]})
         self.assertTrue(r["ok"])
         self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["item"]["path"], song["path"])  # the page swaps in just this row
+        self.assertEqual(r["item"]["status"], "ok")
         # only projects from the scan, not any folder on disk
         self.assertFalse(self.req("/api/ableton/recheck", {"project": str(self.home)})["ok"])
 
