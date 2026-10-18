@@ -710,6 +710,7 @@ VIEWS.inbox = async (root) => {
 
 // ---------------------------------------------------------------- cleanup
 const CLOUD_MARK = ICLOUD_REL + "/";
+const COLLECT_ALL = "In Live, open each set, then File → Collect All and Save, and tick every source: Elsewhere, Other Projects, User Library and Factory Packs.";
 VIEWS.cleanup = async (root) => {
   const data = await get("/api/purge");
   if (!data.has_scan) return noScan(root);
@@ -792,7 +793,69 @@ VIEWS.cleanup = async (root) => {
 };
 
 // ------------------------------------------------------------------- music
+let musicTab = "projects";
+const musicTabs = () => h("div", { class: "seg" }, [["projects", "Projects"], ["packs", "Factory Packs"]].map(([k, l]) =>
+  h("button", { class: musicTab === k ? "on" : "", onclick: () => { musicTab = k; route(); } }, l)));
+
+function statusPill(kind, label, title) {
+  return h("span", { class: `status ${kind}`, title: title || null }, h("span", { class: "dot" }), label);
+}
+
+async function packsView(root) {
+  const data = await get("/api/packs");
+  if (!data.has_scan) return noScan(root);
+  const packs = data.packs;
+  const sum = (xs) => xs.reduce((a, p) => a + (p.alloc || 0), 0);
+  const installed = packs.filter((p) => p.exists);
+  const used = packs.filter((p) => p.status === "used");
+  const unused = packs.filter((p) => p.status === "unused");
+  const missingUsed = packs.filter((p) => p.status === "missing-used");
+  const pill = (p) => ({
+    "used": statusPill("good", "In use"),
+    "unused": statusPill("neutral", "Not used", "No set or preset on this Mac loads anything from it"),
+    "unknown": statusPill("warning", "Unknown", "Nothing that could be read uses it, but some sets or presets couldn't be read"),
+    "missing-used": statusPill("critical", p.listed || p.path ? "Missing, but used" : "Not installed, but used"),
+    "missing": statusPill("neutral", "Listed by Live, not on disk"),
+  })[p.status];
+  const tbody = h("tbody", {});
+  for (const p of packs) {
+    const n = p.sets.length + p.presets.length;
+    const detail = h("tr", { class: "detail-row", hidden: true }, h("td", { colspan: 5 },
+      p.sets.length ? h("div", {}, h("b", {}, "Sets: "), p.sets.map(pretty).join(" · ")) : null,
+      p.presets.length ? h("div", {}, h("b", {}, "Presets and racks: "), p.presets.map(pretty).join(" · ")) : null));
+    const usedBy = n ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); detail.hidden = !detail.hidden; } },
+      [p.sets.length ? `${p.sets.length} set${p.sets.length === 1 ? "" : "s"}` : "", p.sets.length && p.presets.length ? ", " : "",
+        p.presets.length ? `${p.presets.length} preset${p.presets.length === 1 ? "" : "s"}` : ""].join(""))
+      : h("span", { class: "muted" }, "nothing");
+    tbody.append(h("tr", {},
+      h("td", { class: "name" }, h("span", { class: "trunc" }, p.name), p.path ? h("span", { class: "trunc path" }, pretty(p.path)) : null),
+      h("td", { class: "num" }, p.alloc == null ? h("span", { class: "muted" }, p.exists ? "not scanned" : "—") : fmt.size(p.alloc)),
+      h("td", {}, usedBy),
+      h("td", {}, pill(p)),
+      h("td", {}, p.exists ? h("button", { class: "btn small", onclick: () => reveal(p.path) }, "Show") : null)), detail);
+  }
+  root.replaceChildren(
+    h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Music"),
+      h("div", { class: "ink2" }, "Each installed Pack, and which of your sets and presets (including racks in your User Library) load something from it.")),
+    h("div", { class: "spacer" }), musicTabs()),
+    data.rescan_needed ? h("div", { class: "warn" }, "This scan is from an older version that only read sets. Rescan so presets and racks are checked too; until then, nothing here is called unused.") : "",
+    data.unchecked ? h("div", { class: "warn" }, `${data.unchecked} set${data.unchecked === 1 ? "" : "s"} or preset${data.unchecked === 1 ? "" : "s"} couldn't be read (only in iCloud, or damaged), so no Pack is called unused. `,
+      "To check them: in Finder, right-click the folder → Download Now, then rescan.") : "",
+    !data.cfg_found ? h("div", { class: "note" }, "Live's settings (Library.cfg) weren't found, so this lists the Pack folders on disk.") : "",
+    h("div", { class: "grid tiles" },
+      tile("Installed Packs", fmt.count(installed.length), fmt.size(sum(installed))),
+      tile("In use", fmt.count(used.length), fmt.size(sum(used))),
+      tile("Not used", data.rescan_needed ? "—" : fmt.count(unused.length), unused.length ? fmt.size(sum(unused)) : "nothing can be called unused yet"),
+      missingUsed.length ? tile("Missing but used", fmt.count(missingUsed.length), "reinstall these, or sets and presets break") : null),
+    h("div", { class: "card" },
+      h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Pack"), h("th", { class: "num" }, "Size"), h("th", {}, "Used by"),
+        h("th", {}, "Status"), h("th", {}))), tbody),
+      h("p", { class: "ink2" }, "Mac Cleaner never moves or deletes Packs. To remove one you don't use, do it from Live's browser (Packs), so Live knows it's gone. ",
+        "For a Pack that's missing but used, reinstall it from Live's browser or your Ableton account.")));
+}
+
 VIEWS.music = async (root) => {
+  if (musicTab === "packs") return packsView(root);
   const data = await get("/api/ableton");
   if (!data.has_scan) return noScan(root);
   const t = data.totals;
@@ -826,7 +889,7 @@ VIEWS.music = async (root) => {
         const risky = todo.filter((p) => p.status === "external" || p.status === "missing");
         const ok = await confirmItems(`Move ${todo.length} project(s)?`, todo.map((p) => ({
           label: p.name, detail: "→ " + pretty(data.root + "/" + target.get(p.path)),
-        })), "Move", (risky.length ? `${risky.length} of these use files outside the project folder. Open them in Live and use File → Collect All and Save first, or they may show missing samples after moving. ` : "")
+        })), "Move", (risky.length ? `${risky.length} of these use files outside the project folder. ${COLLECT_ALL} Otherwise they may show missing samples after moving. ` : "")
           + "Close these sets in Live before moving them.");
         if (!ok) return;
         await runActions(todo.map((p) => ({ path: p.path, action: "move", dest: data.root + "/" + target.get(p.path) })));
@@ -868,7 +931,7 @@ VIEWS.music = async (root) => {
     h("td", { class: "num" }, `${l.count}`), h("td", { class: "num muted" }, fmt.size(l.alloc))))));
 
   const loose = data.loose_sets.length ? h("div", { class: "card" }, h("h2", {}, `Sets outside a project folder (${data.loose_sets.length})`),
-    h("p", { class: "ink2" }, "Open these in Live and use File → Collect All and Save, or Save As into a new project, so they get a proper project folder."),
+    h("p", { class: "ink2" }, "Open each in Live and use File → Save Live Set As… to give it its own project folder, then File → Collect All and Save (tick Elsewhere, Other Projects, User Library and Factory Packs)."),
     h("table", {}, h("tbody", {}, data.loose_sets.map((s) => h("tr", {},
       h("td", { class: "name" }, h("span", { class: "trunc" }, pretty(s.path))),
       h("td", {}, s.error ? h("span", { class: "muted" }, s.error) : s.external || s.missing
@@ -877,7 +940,8 @@ VIEWS.music = async (root) => {
 
   root.replaceChildren(
     h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Music"),
-      h("div", { class: "ink2" }, "Every Ableton project found on this Mac, where it lives, and whether it's safe to move."))),
+      h("div", { class: "ink2" }, "Every Ableton project found on this Mac, where it lives, and whether it's safe to move.")),
+    h("div", { class: "spacer" }), musicTabs()),
     h("div", { class: "grid tiles" },
       tile("Projects", fmt.count(t.projects), fmt.size(t.alloc)),
       tile("Outside your projects folder", fmt.count(t.outside_library), "should move into " + pretty(data.root)),
@@ -965,7 +1029,7 @@ VIEWS.rules = async (root) => {
     h("div", { class: "card", style: { marginBottom: "14px" } },
       h("table", { class: "rules" }, h("tbody", {}, rows)),
       h("p", { class: "ink2" }, `Desktop counts as your active workspace: its items are left alone until untouched for ${cfg.stale_days} days. `,
-        "Anything an Ableton set uses is always kept where it is, whatever the rules say.")),
+        "Anything an Ableton set or preset uses is always kept where it is, whatever the rules say.")),
     h("details", { class: "card" },
       h("summary", {}, "Advanced: edit the rules as text"),
       h("p", { class: "ink2" }, "Destinations can use {cloud} {ableton} {year} {month} {category}. ",

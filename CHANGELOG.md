@@ -2,6 +2,20 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.6.0
+
+- **Presets and racks now count.** Mac Cleaner now reads the racks and presets in your User Library (and anywhere else), not just sets. A Pack or sample that only a rack uses is now protected too: for example, the Drive and Glow samples loaded by [dnksaus] Stock Drum Selecta.
+- **New: Factory Packs** (Music → Factory Packs). Each installed Pack shows its size and exactly which sets and presets use it.
+  - **Unused** only appears when nothing uses the Pack and every set and preset could be read.
+  - Packs that Live lists but that are missing from disk, while something still needs them, are flagged in red.
+- **Never moved or trashed**, even from Explore:
+  - Live's User Library and its main folders. These have to be moved from inside Live, or projects break.
+  - Installed Packs.
+  - Anything in your rekordbox folder.
+- A file in Downloads or Desktop that a preset loads is kept where it is, with advice on what to do.
+- The **Collect All and Save** instructions now say to tick every source: Elsewhere, Other Projects, User Library and Factory Packs.
+- **Rescan once after updating** so your presets and racks get checked.
+
 ## 0.5.0
 
 Safer cleanup, reviewed in two rounds by an independent reviewer.

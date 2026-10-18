@@ -7,7 +7,7 @@ Each finding: {kind, title, path, alloc, risk, why, action}
   action "trash" / "trash-asd", or None for "look at it, but there's
          nothing to click" (e.g. the Trash itself, big old files)
 
-Guards applied to everything: never a file an Ableton set uses, never
+Guards applied to everything: never a file an Ableton set or preset uses, never
 anything inside an Ableton project or a sound library, never something whose
 parent folder is already listed.
 """
@@ -312,12 +312,12 @@ def dupe_plan(con, cfg: dict, used=None, unchecked=None) -> dict:
             if stuck:
                 user = os.path.basename(used.users(keep)[0])
                 why = (f"Keep both for now: {user} uses the copy in {_short(os.path.dirname(keep), h)}. "
-                       "After Collect All and Save in Live, one can go.")
+                       "Once that copy is collected or moved into place in Live, one can go.")
             elif _in_any(m["path"], [cloud]):
                 why = (f"Identical to {_short(keep, h)}. This copy is in iCloud Drive, so removing it "
                        "removes it from your other devices too.")
             else:
-                why = f"Identical to {_short(keep, h)}" + (", which an Ableton set uses." if keep_used else ".")
+                why = f"Identical to {_short(keep, h)}" + (", which Ableton uses." if keep_used else ".")
             plan[m["path"]] = {"keep": keep, "keep_short": _short(keep, h), "why": why, "size": m["size"],
                                "group": gid, "trashable": not stuck}
     return plan

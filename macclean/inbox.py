@@ -12,7 +12,7 @@ import time
 from collections import Counter
 from datetime import datetime
 
-from . import classify, config, safety
+from . import ableton, classify, config, safety
 
 FOLDER_SIZE_FILE_LIMIT = 20000
 
@@ -137,7 +137,7 @@ def _extracted_copy(item: dict, inbox: str):
 
 
 def mark_used_by_sets(data: dict, con, cfg: dict | None = None) -> None:
-    """Items an Ableton set elsewhere depends on are kept where they are,
+    """Items an Ableton set or preset elsewhere depends on are kept where they are,
     whatever the rules say: moving them would break the set. Duplicates of
     something already filed are suggested for the Trash instead of a move."""
     if con is None:
@@ -150,10 +150,8 @@ def mark_used_by_sets(data: dict, con, cfg: dict | None = None) -> None:
             users = used.users(item["path"])
             if users:
                 item["used_by"] = users
-                name = os.path.basename(users[0])
-                item["suggestion"] = {"rule": "Used by an Ableton set", "action": "keep", "auto": False,
-                                      "reason": f"{name} uses it. Open that set in Live and use File → Collect All "
-                                                "and Save, then it can be moved"}
+                item["suggestion"] = {"rule": "Used by Ableton", "action": "keep", "auto": False,
+                                      "reason": ableton.keep_advice(users[0])}
                 continue
             d = dupes.get(item["path"])
             if d and d["trashable"]:

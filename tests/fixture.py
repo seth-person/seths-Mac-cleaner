@@ -57,6 +57,37 @@ def write(path: Path, data: bytes = b"", size: int = 0, age_days: float = 0, see
     return path
 
 
+def preset_xml(refs, version="Ableton Live 12.4.6") -> bytes:
+    """A rack/preset (.adg/.adv): refs are dicts {path, rel?, pack?, pack_id?}."""
+    parts = [f'<?xml version="1.0" encoding="UTF-8"?>\n<Ableton MajorVersion="5" Creator="{version}">'
+             "<GroupDevicePreset><Device><DrumGroupDevice><Branches>"]
+    for r in refs:
+        parts.append(
+            "<SampleRef><FileRef>"
+            f'<RelativePath Value="{r.get("rel", "")}" /><Path Value="{r["path"]}" />'
+            f'<LivePackName Value="{r.get("pack", "")}" /><LivePackId Value="{r.get("pack_id", "")}" />'
+            "</FileRef>"
+            '<SourceContext><Value><BranchSourceContext><OriginalFileRef><FileRef>'
+            '<Path Value="/Users/nobody/Downloads/where-it-came-from.wav" />'
+            "</FileRef></OriginalFileRef></BranchSourceContext></Value></SourceContext></SampleRef>")
+    parts.append("</Branches></DrumGroupDevice></Device></GroupDevicePreset></Ableton>")
+    return gzip.compress("".join(parts).encode())
+
+
+def library_cfg(home: Path, user_library_parent: Path, packs: list, places: list, template: str) -> bytes:
+    slices = "".join(f'<LibrarySliceInfo Id="{i}" Path="{p}" DisplayName="{n}" UniqueId="[{u}](https://{u})" />'
+                     for i, (n, p, u) in enumerate(packs))
+    folders = "".join(f'<UserFolderInfo Id="{i}" Path="{p}" DisplayName="{os.path.basename(p)}" IconName="" />'
+                      for i, p in enumerate(places))
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n<Ableton MajorVersion="5" Creator="Ableton Live 12.4.6">'
+            f'<ContentLibrary><UserLibrary><LibraryProject Id="2"><ProjectLocation />'
+            f'<ProjectName Value="User Library" /><ProjectPath Value="{user_library_parent}" /></LibraryProject>'
+            f'</UserLibrary><SliceInfoList>{slices}</SliceInfoList><UserFolderInfoList>{folders}</UserFolderInfoList>'
+            f'<PreferredFactoryPacksInstallationPath Value="" /><DefaultTemplateSet Value="{template}" />'
+            f'<SpliceDownloadFolderModeMember Value="UserLibrary" /><CustomSpliceDownloadPathMember Value="" />'
+            f'</ContentLibrary></Ableton>').encode()
+
+
 def project(root: Path, name: str, samples=(), external=(), missing=(), age_days=0, backups=0) -> Path:
     p = root / name
     (p / "Ableton Project Info").mkdir(parents=True, exist_ok=True)
@@ -108,8 +139,35 @@ def build(home: Path) -> Path:
     shared = write(dl / "vocal chop.wav", size=1_100_000, age_days=30, seed=8)
     project(dl, "Old Song Project", samples=["pad.wav"], external=[shared], age_days=100)
 
+    # Factory Packs, and Live's settings listing them (like a real Library.cfg).
+    packs_dir = home / "Music" / "Ableton" / "Factory Packs"
+    glow = write(packs_dir / "Drive and Glow" / "Samples" / "Glow Hit.wav", size=50_000, seed=20)
+    saw = write(packs_dir / "Synth Essentials" / "Samples" / "Saw.wav", size=50_000, seed=21)
+    lfo = write(packs_dir / "Max for Live Essentials" / "Devices" / "LFO.amxd", b"ampf\x00fake max device")
+    c3 = write(packs_dir / "Grand Piano" / "Samples" / "C3.wav", size=50_000, seed=22)
+    kick = write(packs_dir / "Drum Booth" / "Samples" / "Kick.wav", size=50_000, seed=23)
+    # A preset inside a Pack only uses that Pack: it says nothing about whether *you* use it.
+    write(packs_dir / "Grand Piano" / "Presets" / "Grand Piano.adv", preset_xml([{"path": str(c3), "pack": "Grand Piano"}]))
+    # Racks in the User Library (in iCloud, like yours) that load Pack samples and a Max device.
+    ul = cloud / "Active Storage" / "User Library"
+    write(ul / "Presets" / "Instruments" / "Drum Rack" / "[dnksaus] Stock Drum Selecta (Suite).adg",
+          preset_xml([{"path": str(glow), "pack": "Drive and Glow", "pack_id": "www.ableton.com/253"},
+                      {"path": str(lfo), "pack": "Max for Live Essentials"}]))
+    oneshot = write(dl / "bass one-shot.wav", size=60_000, age_days=40, seed=24)
+    write(ul / "Presets" / "Instruments" / "Instrument Rack" / "{dnksaus} Bass Preset Selecta (CPU INTENSIVE).adg",
+          preset_xml([{"path": str(saw), "pack": "Synth Essentials"}, {"path": str(oneshot)},
+                      {"path": str(packs_dir / "Lost Pack" / "Samples" / "Gone.wav"), "pack": "Lost Pack"}]))
+    write(cloud / "Active Storage" / "rekordbox" / "master.db", b"rekordbox database")
+    listed = ["Drive and Glow", "Synth Essentials", "Max for Live Essentials", "Grand Piano", "Drum Booth", "Lost Pack"]
+    write(home / "Library" / "Preferences" / "Ableton" / "Live 12.4.6" / "Library.cfg",
+          library_cfg(home, cloud / "Active Storage",
+                      [(n, packs_dir / n, f"www.ableton.com/{i}") for i, n in enumerate(listed)],
+                      [cloud / "Active Storage", desk / "ASYM Music"],
+                      str(home / "Active Storage" / "User Library" / "Templates" / "Default.als")))
+    write(home / "Library" / "Preferences" / "Ableton" / "Live 11.3.13" / "Library.cfg", b"<Ableton />")  # older Live
+
     # Desktop: what's active right now.
-    project(desk, "Current Song Project", samples=["bass.wav", "vox.wav"], age_days=1, backups=2)
+    project(desk, "Current Song Project", samples=["bass.wav", "vox.wav"], external=[kick], age_days=1, backups=2)
     write(desk / "notes.txt", b"todo", age_days=2)
     write(desk / "cover art.png", size=300_000, age_days=3, seed=9)
 

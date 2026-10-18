@@ -239,6 +239,79 @@ class PurgeTests(FakeHome):
             self.assertIn(needle, text)
 
 
+class PackAndPresetTests(FakeHome):
+    """Lesson from a real cleanup: racks in the User Library load Pack samples and
+    Max devices, so a Pack is only unused if no set AND no preset uses it."""
+
+    def packs(self):
+        return {p["name"]: p for p in ableton.packs_overview(self.con, self.cfg)["packs"]}
+
+    def test_pack_used_only_by_a_rack_is_in_use(self):
+        p = self.packs()
+        self.assertEqual(p["Drive and Glow"]["status"], "used")
+        self.assertEqual(p["Drive and Glow"]["sets"], [])
+        self.assertTrue(p["Drive and Glow"]["presets"][0].endswith("[dnksaus] Stock Drum Selecta (Suite).adg"))
+        self.assertEqual(p["Max for Live Essentials"]["status"], "used")  # via the rack's .amxd
+        self.assertEqual(p["Synth Essentials"]["status"], "used")
+
+    def test_pack_used_by_a_set(self):
+        self.assertEqual(self.packs()["Drum Booth"]["status"], "used")
+
+    def test_presets_inside_a_pack_dont_count_as_use(self):
+        self.assertEqual(self.packs()["Grand Piano"]["status"], "unused")
+
+    def test_missing_pack_that_is_still_used(self):
+        self.assertEqual(self.packs()["Lost Pack"]["status"], "missing-used")
+
+    def test_unreadable_preset_means_nothing_is_called_unused(self):
+        self.con.execute("INSERT INTO ableton_presets (path, error) VALUES ('/x/y.adg', 'Only in iCloud')")
+        try:
+            self.assertEqual(self.packs()["Grand Piano"]["status"], "unknown")
+        finally:
+            self.con.execute("DELETE FROM ableton_presets WHERE path='/x/y.adg'")
+
+    def test_presets_are_not_loose_sets(self):
+        self.assertEqual(len(ableton.overview(self.con, self.cfg)["loose_sets"]), 1)
+
+    def test_rack_parse_ignores_where_samples_came_from(self):
+        rack = next(self.home.rglob("[[]dnksaus[]] Stock Drum Selecta (Suite).adg"))
+        refs = ableton.parse_set(str(rack))["refs"]
+        self.assertEqual(len(refs), 2)
+        self.assertFalse(any("where-it-came-from" in r["path"] for r in refs))
+
+    def test_file_a_preset_uses_is_kept_and_blocked(self):
+        from macclean import safety
+        oneshot = self.home / "Downloads" / "bass one-shot.wav"
+        msg = safety.preflight(safety.UsedIndex(self.con), str(oneshot), "trash")
+        self.assertIn("Bass Preset Selecta", msg)
+        data = inbox.list_inboxes(self.cfg)
+        inbox.mark_used_by_sets(data, self.con, self.cfg)
+        item = next(i for ib in data["inboxes"] for i in ib["items"] if i["name"] == "bass one-shot.wav")
+        self.assertEqual(item["suggestion"]["action"], "keep")
+        self.assertIn("preset", item["suggestion"]["reason"])
+
+    def test_live_folders_and_rekordbox_are_protected(self):
+        from macclean import safety
+        cloud = self.home / config.ICLOUD_REL
+        ul = cloud / "Active Storage" / "User Library"
+        packs = self.home / "Music" / "Ableton" / "Factory Packs"
+        for path in (ul, ul / "Presets", packs / "Grand Piano", cloud / "Active Storage" / "rekordbox",
+                     cloud / "Active Storage" / "rekordbox" / "master.db"):
+            self.assertIsNotNone(safety.protected_reason(str(path), self.cfg), path)
+        # deeper inside the User Library is fine (the used-by check still guards each file)
+        self.assertIsNone(safety.protected_reason(str(ul / "Presets" / "Instruments"), self.cfg))
+
+    def test_library_cfg(self):
+        from macclean import live_prefs
+        info = live_prefs.read_library()
+        self.assertTrue(info["cfg_path"].endswith("Live 12.4.6/Library.cfg"))  # newest Live wins
+        self.assertTrue(info["user_library"].endswith("Active Storage/User Library"))
+        self.assertIn("Drive and Glow", [p["name"] for p in info["packs"]])
+        self.assertEqual(info["packs"][0]["id"], "www.ableton.com/0")  # pasted-link junk cleaned
+        self.assertEqual([os.path.basename(p["path"]) for p in info["places"]], ["Active Storage", "ASYM Music"])
+        self.assertTrue(info["default_template"].endswith("Templates/Default.als"))
+
+
 class ActionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

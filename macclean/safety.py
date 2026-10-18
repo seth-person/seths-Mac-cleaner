@@ -94,10 +94,12 @@ def inside_any(path: str, roots) -> bool:
 
 
 def unchecked_sets(con) -> list:
-    """Sets the scan couldn't read (only in iCloud, or damaged): their samples are unknown."""
+    """Sets and presets the scan couldn't read (only in iCloud, or damaged):
+    what they use is unknown, so nothing may be called unused."""
     if con is None:
         return []
-    return [dict(r) for r in con.execute("SELECT path, error FROM ableton_sets WHERE error IS NOT NULL")]
+    return [dict(r) for r in con.execute("SELECT path, error FROM ableton_sets WHERE error IS NOT NULL "
+                                         "UNION ALL SELECT path, error FROM ableton_presets WHERE error IS NOT NULL")]
 
 
 # --- protected folders -------------------------------------------------------
@@ -132,6 +134,29 @@ def protected_reason(path: str, cfg: dict) -> str | None:
         return "is part of Ableton's library"
     if real.lower().endswith(_PROTECTED_SUFFIXES):
         return "is a Photos/Music/TV library"
+    if any(part.casefold() == "rekordbox" for part in real.split(os.sep)):
+        return "is part of your rekordbox library, and moving it would break rekordbox's track paths"
+    live = _live_reason(real)
+    if live:
+        return live
+    return None
+
+
+def _live_reason(real: str) -> str | None:
+    """Live's User Library (and its main folders) and installed Packs are only
+    ever moved or removed from inside Live: Live tracks where they are."""
+    from . import live_prefs
+    info = live_prefs.read_library()
+    n = norm(real)
+    if info and info.get("user_library"):
+        ul = norm(os.path.realpath(info["user_library"]))
+        if n == ul or os.path.dirname(n) == ul:
+            return ("is part of Live's User Library. Move it from inside Live "
+                    "(Settings → Library → Location of User Library), or projects that use it break")
+    for folder in live_prefs.pack_folders(info):
+        f = norm(os.path.realpath(folder))
+        if n == f or os.path.dirname(n) == f:
+            return "is an installed Live Pack. Remove it from Live's browser (Packs) instead"
     return None
 
 

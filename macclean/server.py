@@ -115,6 +115,13 @@ def api_purge(q):
             "summary": purge.summary(con, cfg, items), "scanned_at": db.meta(con).get("scanned_at")}
 
 
+def api_packs(q):
+    con = _con()
+    if not con:
+        return {"has_scan": False}
+    return {"has_scan": True, **ableton.packs_overview(con, config.load_config())}
+
+
 def api_ableton(q):
     con = _con()
     if not con:
@@ -270,7 +277,7 @@ def post_reveal(body):
 
 
 GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": api_tree,
-       "/api/inbox": api_inbox, "/api/destinations": api_destinations, "/api/purge": api_purge, "/api/ableton": api_ableton,
+       "/api/inbox": api_inbox, "/api/destinations": api_destinations, "/api/purge": api_purge, "/api/ableton": api_ableton, "/api/packs": api_packs,
        "/api/config": api_config, "/api/history": api_history, "/api/survey": api_survey,
        "/api/update": api_update}
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,

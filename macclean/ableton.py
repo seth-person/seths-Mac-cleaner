@@ -1,6 +1,6 @@
-"""Ableton Live project discovery and set (.als) dependency checks.
+"""Ableton Live project discovery and dependency checks for sets and presets.
 
-An .als file is gzipped XML. Every sample/device file the set needs appears as
+An .als set, and an .adg/.adv/.alc/.agr rack or preset, is gzipped XML. Every sample/device file the set needs appears as
 a <FileRef> holding an absolute <Path> and a <RelativePath> (Live 10+), or a
 list of <RelativePathElement Dir=".."/> plus <Name> (Live 9). For each set we
 check where each referenced file resolves:
@@ -13,6 +13,11 @@ check where each referenced file resolves:
 
 FileRefs that only record *where a sample originally came from* (browser
 history, presets last loaded) aren't needed for playback and are ignored.
+
+Presets matter as much as sets: a rack in the User Library can load samples
+and Max for Live devices from Factory Packs, so a Pack only counts as unused
+when no set *and* no preset uses it. (.amxd devices are compiled Max patches,
+not XML; what loads them is the rack or set that references them.)
 """
 from __future__ import annotations
 
@@ -28,10 +33,17 @@ from . import config
 _IGNORED_CONTEXTS = {"SourceContext", "OriginalFileRef", "LastPresetRef", "PresetRef",
                      "BrowserContentPath", "OriginalFileSize"}
 _PACK_MARKERS = ("/Factory Packs/", "/Core Library/", "/Ableton/Packs/", "/App-Resources/")
+_BUILTIN_MARKERS = ("/Core Library/", "/App-Resources/")
+SET_EXT = ".als"
+PRESET_EXTS = (".adg", ".adv", ".alc", ".agr")
+
+# Shown wherever Mac Cleaner asks you to collect a project's files.
+COLLECT_ALL_STEPS = ("In Live, open the set, then File → Collect All and Save. In the dialog, tick every source: "
+                     "Elsewhere, Other Projects, User Library and Factory Packs, then Save.")
 
 
 def parse_set(path: str) -> dict:
-    """Return {'version': str, 'refs': [{'path','rel','pack'}]} for an .als file."""
+    """Return {'version': str, 'refs': [{'path','rel','pack','pack_id'}]} for a set or preset."""
     refs = []
     version = ""
     stack = []
@@ -43,7 +55,8 @@ def parse_set(path: str) -> dict:
             version = attrs.get("Creator", "")
         stack.append(tag)
         if tag == "FileRef" and cur is None and not _IGNORED_CONTEXTS.intersection(stack):
-            cur = {"path": "", "rel": "", "rel_parts": [], "name": "", "pack": "", "depth": len(stack)}
+            cur = {"path": "", "rel": "", "rel_parts": [], "name": "", "pack": "", "pack_id": "",
+                   "depth": len(stack)}
             return
         if cur is None:
             return
@@ -59,6 +72,8 @@ def parse_set(path: str) -> dict:
             cur["name"] = value
         elif tag == "LivePackName" and value:
             cur["pack"] = value
+        elif tag == "LivePackId" and value:
+            cur["pack_id"] = value
 
     def end(tag):
         nonlocal cur
@@ -67,7 +82,7 @@ def parse_set(path: str) -> dict:
             if not rel and (cur["rel_parts"] or cur["name"]):
                 rel = "/".join(cur["rel_parts"] + ([cur["name"]] if cur["name"] else []))
             if rel or cur["path"]:
-                refs.append({"path": cur["path"], "rel": rel, "pack": cur["pack"]})
+                refs.append({"path": cur["path"], "rel": rel, "pack": cur["pack"], "pack_id": cur["pack_id"]})
             cur = None
         stack.pop()
 
@@ -90,17 +105,56 @@ def parse_set(path: str) -> dict:
     return {"version": version, "refs": refs}
 
 
+def is_preset(path: str) -> bool:
+    return path.lower().endswith(PRESET_EXTS)
+
+
+def keep_advice(user: str) -> str:
+    """What to do about a file that `user` (a set or preset) still loads."""
+    name = os.path.basename(user)
+    if is_preset(user):
+        return (f"The preset {name} loads it. Keep it here, or add the file to your User Library from Live's "
+                "browser and re-save the preset; then it can be moved.")
+    return f"{name} uses it. {COLLECT_ALL_STEPS} After that it can be moved."
+
+
 def _inside(path: str, folder: str) -> bool:
     return os.path.normpath(path).startswith(os.path.normpath(folder) + os.sep)
 
 
-def check_set(path: str, project_dir: str | None) -> dict:
+def _pack_for(ref: dict, found: str | None, packs: list) -> str | None:
+    """Which Pack a reference comes from: the installed Pack folder it resolved
+    into, else the Pack Live recorded for it, else '…/Factory Packs/<name>/' in
+    its path. None for the built-in Core Library and for non-Pack files."""
+    shown = found or ref["path"] or ref["rel"]
+    if any(m in shown for m in _BUILTIN_MARKERS):
+        return None
+    if found:
+        n = os.path.normpath(found)
+        for p in packs:
+            if n.startswith(os.path.normpath(p["path"]) + os.sep):
+                return p["name"]
+    if ref.get("pack_id"):
+        for p in packs:
+            if p.get("id") and p["id"] == ref["pack_id"]:
+                return p["name"]
+    if ref.get("pack"):
+        return ref["pack"]
+    if "/Factory Packs/" in shown:
+        return shown.split("/Factory Packs/", 1)[1].split("/", 1)[0] or None
+    return None
+
+
+def check_set(path: str, project_dir: str | None, packs: list | None = None) -> dict:
+    """Resolve every file a set or preset needs. `packs` = installed Packs (live_prefs)."""
+    packs = packs or []
     parsed = parse_set(path)
     base = project_dir or os.path.dirname(path)
     counts = {"in_project": 0, "packs": 0, "external": 0, "missing": 0}
     examples = {"external": [], "missing": []}
     external = []
     used = []  # every file that resolved, wherever it is
+    pack_refs = {}  # pack name -> resolved?
     seen = set()
     for ref in parsed["refs"]:
         key = (ref["path"], ref["rel"])
@@ -118,6 +172,9 @@ def check_set(path: str, project_dir: str | None) -> dict:
         is_pack = bool(ref["pack"]) or any(m in shown for m in _PACK_MARKERS)
         if found:
             used.append(found)
+        pack = _pack_for(ref, found, packs)
+        if pack:
+            pack_refs[pack] = pack_refs.get(pack, False) or bool(found)
         if found and _inside(found, base):
             counts["in_project"] += 1
         elif is_pack:
@@ -132,7 +189,7 @@ def check_set(path: str, project_dir: str | None) -> dict:
             if len(examples["missing"]) < 8:
                 examples["missing"].append(shown)
     return {"version": parsed["version"], "refs": len(seen), **counts, "examples": examples,
-            "external_paths": external, "used_paths": used}
+            "external_paths": external, "used_paths": used, "pack_refs": pack_refs}
 
 
 def _project_for(path: str, projects: set) -> str | None:
@@ -148,32 +205,104 @@ def _is_backup(path: str) -> bool:
     return os.sep + "Backup" + os.sep in path
 
 
+def _inside_pack(path: str, packs: list) -> bool:
+    if any(m in path for m in _BUILTIN_MARKERS):
+        return True
+    n = os.path.normpath(path)
+    return any(n.startswith(os.path.normpath(p["path"]) + os.sep) for p in packs)
+
+
 def analyse_sets(con, cfg, cancel=None, state=None) -> None:
-    """Parse every current (non-backup) set found by the scan; store results."""
+    """Parse every current set and every preset outside the Packs; store what
+    each one needs. Presets *inside* a Pack only point at that Pack's own
+    files, so they say nothing about whether you use it."""
+    from . import live_prefs
+    packs = live_prefs.installed_packs()
     projects = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")}
-    rows, ref_rows = [], []
-    for r in con.execute("SELECT path, dataless FROM files WHERE ext='.als'").fetchall():
+    set_rows, preset_rows, ref_rows, pack_rows = [], [], [], []
+    exts = (SET_EXT,) + PRESET_EXTS
+    query = "SELECT path, ext, dataless FROM files WHERE ext IN (%s)" % ",".join("?" * len(exts))
+    for r in con.execute(query, exts).fetchall():
         if cancel is not None and cancel.is_set():
             break
         path = r["path"]
         if _is_backup(path) or os.path.basename(path).startswith("._"):
             continue
+        is_preset = r["ext"] != SET_EXT
+        if is_preset and _inside_pack(path, packs):
+            continue
+        rows = preset_rows if is_preset else set_rows
         project = _project_for(path, projects)
         if r["dataless"]:
             rows.append((path, project, "", 0, 0, 0, 0, 0, "{}", "Only in iCloud (not downloaded)"))
             continue
         try:
-            res = check_set(path, project)
+            res = check_set(path, project, packs)
             rows.append((path, project, res["version"], res["refs"], res["in_project"], res["packs"],
                          res["external"], res["missing"], json.dumps(res["examples"]), None))
             ref_rows.extend((path, os.path.normpath(e)) for e in res["used_paths"])
-        except Exception as e:  # corrupt/unreadable sets shouldn't stop the scan
+            pack_rows.extend((path, name, int(found)) for name, found in res["pack_refs"].items())
+        except Exception as e:  # corrupt/unreadable files shouldn't stop the scan
             rows.append((path, project, "", 0, 0, 0, 0, 0, "{}", f"Couldn't read: {e}"))
         if state is not None:
             state["current"] = path
-    con.executemany("INSERT OR REPLACE INTO ableton_sets VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    con.executemany("INSERT OR REPLACE INTO ableton_sets VALUES (?,?,?,?,?,?,?,?,?,?)", set_rows)
+    con.executemany("INSERT OR REPLACE INTO ableton_presets VALUES (?,?,?,?,?,?,?,?,?,?)", preset_rows)
     con.executemany("INSERT INTO ableton_refs VALUES (?,?)", ref_rows)
+    con.executemany("INSERT INTO ableton_pack_refs VALUES (?,?,?)", pack_rows)
     con.commit()
+
+
+def packs_overview(con, cfg) -> dict:
+    """Every installed Factory Pack: size, and which sets and presets use it.
+    'Unused' only when nothing uses it AND every set and preset could be read."""
+    from . import db, live_prefs, safety
+    info = live_prefs.read_library()
+    installed = live_prefs.installed_packs(info)
+    presets = {r["path"] for r in con.execute("SELECT path FROM ableton_presets")}
+    users = defaultdict(lambda: {"sets": set(), "presets": set(), "missing": False, "name": ""})
+    for r in con.execute("SELECT user_path, pack, found FROM ableton_pack_refs"):
+        u = users[r["pack"].casefold()]
+        u["name"] = u["name"] or r["pack"]
+        u["presets" if r["user_path"] in presets else "sets"].add(r["user_path"])
+        if not r["found"]:
+            u["missing"] = True
+    unchecked = safety.unchecked_sets(con)
+    out, matched = [], set()
+    for p in installed:
+        keys = {p["name"].casefold(), os.path.basename(p["path"]).casefold()}
+        matched |= keys
+        sets, pres = set(), set()
+        for k in keys:
+            sets |= users[k]["sets"] if k in users else set()
+            pres |= users[k]["presets"] if k in users else set()
+        row = con.execute("SELECT alloc, size FROM dirs WHERE path=?", (p["path"],)).fetchone()
+        if not p["exists"]:
+            status = "missing-used" if (sets or pres) else "missing"
+        elif sets or pres:
+            status = "used"
+        elif unchecked:
+            status = "unknown"
+        else:
+            status = "unused"
+        out.append({"name": p["name"], "path": p["path"], "listed": p["listed"], "exists": p["exists"],
+                    "alloc": row["alloc"] if row else None, "status": status,
+                    "sets": sorted(sets), "presets": sorted(pres)})
+    # Packs your sets or presets use that aren't installed at all.
+    for key, u in users.items():
+        if key in matched:
+            continue
+        out.append({"name": u["name"], "path": None, "listed": False, "exists": False, "alloc": None,
+                    "status": "missing-used", "sets": sorted(u["sets"]), "presets": sorted(u["presets"])})
+    order = {"missing-used": 0, "unknown": 1, "used": 2, "unused": 3, "missing": 4}
+    out.sort(key=lambda x: (order[x["status"]], -(x["alloc"] or 0)))
+    meta = db.meta(con)
+    return {
+        "packs": out, "cfg_found": info is not None, "cfg_path": (info or {}).get("cfg_path"),
+        "unchecked": len(unchecked), "unchecked_examples": [u["path"] for u in unchecked[:5]],
+        "presets_checked": len(presets), "rescan_needed": int(meta.get("index_version", 0) or 0) < 2,
+        "collect_steps": COLLECT_ALL_STEPS,
+    }
 
 
 def overview(con, cfg) -> dict:

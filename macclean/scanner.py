@@ -30,7 +30,9 @@ _PACKAGE_CATEGORY = {
     ".xcodeproj": "code", ".xcworkspace": "code", ".playground": "code", ".xcarchive": "code",
 }
 _SYSTEM_ROOTS = {"/System", "/usr", "/bin", "/sbin", "/private", "/Library", "/opt", "/cores"}
-_ALWAYS_STORE_EXT = {".als", ".asd"}
+# Sets, presets/racks (checked for what they load) and .asd files are always recorded.
+_ALWAYS_STORE_EXT = {".als", ".asd", ".adg", ".adv", ".alc", ".agr"}
+INDEX_VERSION = 2  # 2: presets and racks are part of the "used by" index
 
 
 class ScanCancelled(Exception):
@@ -94,7 +96,7 @@ class Scanner:
                 "total_size": totals[0], "total_alloc": totals[1], "total_files": totals[2],
                 "disk_total": du.total, "disk_used": du.used, "disk_free": du.free,
                 "errors": self.state["errors"],
-                "home": str(config.home()),
+                "home": str(config.home()), "index_version": INDEX_VERSION,
             }
             self.con.executemany("INSERT OR REPLACE INTO meta VALUES (?,?)",
                                  [(k, str(v)) for k, v in meta.items()])
