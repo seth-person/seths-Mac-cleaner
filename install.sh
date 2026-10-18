@@ -57,8 +57,13 @@ else
   fi
   status="$(curl -s -o "$tmp/release.json" -w '%{http_code}' ${token:+-H "Authorization: Bearer $token"} \
            "https://api.github.com/repos/$REPO/releases/latest")"
+  case "$status" in
+    200|401|404) ;;
+    403|429) die "GitHub is limiting how often this Mac can ask it for things (HTTP $status). Wait an hour, then run this again." ;;
+    *) die "Couldn't reach GitHub (HTTP $status). Check your internet connection, then run this again." ;;
+  esac
   if [ "$status" != "200" ]; then
-    bold "Mac Cleaner's repository is private, so this needs a GitHub token."
+    bold "GitHub can't find Mac Cleaner's releases without a token (the repository may be private)."
     cat <<'EOF'
   1. Open https://github.com/settings/personal-access-tokens/new
   2. Name it "Mac Cleaner". Under Repository access choose "Only select repositories"

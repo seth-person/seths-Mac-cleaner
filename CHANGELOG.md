@@ -15,6 +15,7 @@ Each `## <version>` section becomes the release notes shown in the app's Update 
   - A **version number**, e.g. “Blackout Remix V10”, is one of your bounces → `Music/Bounces/<year>`.
   - **Anything else** is a stem or sketch → `Music/Bounces/Stems & Sketches/<year>`.
   - The old single “Bounces & audio” rule is replaced. Your other rule changes are kept.
+- The Terminal installer no longer asks for a GitHub token when GitHub is only busy. It now says to wait and try again.
 
 ## 0.6.0
 
