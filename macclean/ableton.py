@@ -321,7 +321,7 @@ def overview(con, cfg) -> dict:
             loose.append(d)
 
     project_paths = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")}
-    sub = defaultdict(lambda: {"backup": 0, "asd": 0, "nbackups": 0, "newest": 0.0})
+    sub = defaultdict(lambda: {"backup": 0, "asd": 0, "nbackups": 0, "newest": 0.0, "newest_set": None})
     for r in con.execute("SELECT path, alloc FROM dirs WHERE name='Backup'"):
         if r["path"][: -len("/Backup")] in project_paths:
             sub[r["path"][: -len("/Backup")]]["backup"] = r["alloc"]
@@ -333,8 +333,18 @@ def overview(con, cfg) -> dict:
             sub[proj]["asd"] += r["alloc"]
         elif _is_backup(r["path"]):
             sub[proj]["nbackups"] += 1
-        else:
-            sub[proj]["newest"] = max(sub[proj]["newest"], r["mtime"])
+        elif r["mtime"] >= sub[proj]["newest"]:
+            sub[proj]["newest"] = r["mtime"]
+            sub[proj]["newest_set"] = r["path"]
+
+    # Live's own "recently opened" list, mapped to projects (0 = most recent).
+    from . import live_prefs, marks
+    opened = {}
+    for rank, set_path in enumerate(live_prefs.recent_sets()):
+        proj = _project_for(set_path, project_paths)
+        if proj and proj not in opened:
+            opened[proj] = rank
+    important = marks.important_lookup()
 
     projects = []
     names = defaultdict(list)
@@ -356,6 +366,9 @@ def overview(con, cfg) -> dict:
             "status": status, "backup_bytes": extra.get("backup") or 0,
             "backup_sets": extra.get("nbackups") or 0, "asd_bytes": extra.get("asd") or 0,
             "version": max((s["version"] for s in sets), default=""),
+            "newest_set": extra.get("newest_set") or (sets[0]["path"] if sets else None),
+            "opened_rank": opened.get(p), "important": marks.is_important(p, important),
+            "external_total": sum(s["external"] for s in sets), "missing_total": sum(s["missing"] for s in sets),
         }
         projects.append(item)
         names[_base_name(r["name"])].append(p)
@@ -373,6 +386,7 @@ def overview(con, cfg) -> dict:
 
     return {
         "root": root, "buckets": buckets, "projects": projects, "loose_sets": loose,
+        "recent_from_live": bool(opened), "collect_steps": COLLECT_ALL_STEPS,
         "locations": sorted(({"location": k, **v} for k, v in locations.items()),
                             key=lambda x: -x["count"]),
         "totals": {
@@ -384,6 +398,53 @@ def overview(con, cfg) -> dict:
             "alloc": sum(p["alloc"] or 0 for p in projects),
         },
     }
+
+
+def recheck_project(con, project: str) -> dict:
+    """Re-read one project's sets and presets from disk right now (after you
+    Collect All and Save), without a full rescan."""
+    from . import live_prefs
+    if not os.path.isdir(project):
+        raise FileNotFoundError(f"{project} isn't there any more")
+    packs = live_prefs.installed_packs()
+    old = [r["path"] for r in con.execute("SELECT path FROM ableton_sets WHERE project=? "
+                                          "UNION ALL SELECT path FROM ableton_presets WHERE project=?",
+                                          (project, project))]
+    for p in old:
+        con.execute("DELETE FROM ableton_refs WHERE set_path=?", (p,))
+        con.execute("DELETE FROM ableton_pack_refs WHERE user_path=?", (p,))
+    con.execute("DELETE FROM ableton_sets WHERE project=?", (project,))
+    con.execute("DELETE FROM ableton_presets WHERE project=?", (project,))
+    results = []
+    for dirpath, dirnames, filenames in os.walk(project):
+        dirnames[:] = [d for d in dirnames if d != "Backup" and not d.startswith(".")]
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if fn.startswith("._") or ext not in (SET_EXT,) + PRESET_EXTS:
+                continue
+            path = os.path.join(dirpath, fn)
+            table = "ableton_sets" if ext == SET_EXT else "ableton_presets"
+            try:
+                res = check_set(path, project, packs)
+            except Exception as e:
+                con.execute(f"INSERT OR REPLACE INTO {table} VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (path, project, "", 0, 0, 0, 0, 0, "{}", f"Couldn't read: {e}"))
+                results.append({"path": path, "error": str(e)})
+                continue
+            con.execute(f"INSERT OR REPLACE INTO {table} VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (path, project, res["version"], res["refs"], res["in_project"], res["packs"],
+                         res["external"], res["missing"], json.dumps(res["examples"]), None))
+            con.executemany("INSERT INTO ableton_refs VALUES (?,?)",
+                            [(path, os.path.normpath(e)) for e in res["used_paths"]])
+            con.executemany("INSERT INTO ableton_pack_refs VALUES (?,?,?)",
+                            [(path, n, int(f)) for n, f in res["pack_refs"].items()])
+            if ext == SET_EXT:
+                results.append({"path": path, "external": res["external"], "missing": res["missing"]})
+    con.commit()
+    sets = [r for r in results if "error" not in r]
+    status = "no-sets" if not results else "missing" if any(r["missing"] for r in sets) else \
+        "external" if any(r["external"] for r in sets) else "unknown" if len(sets) < len(results) else "ok"
+    return {"project": project, "status": status, "sets": results}
 
 
 def _base_name(name: str) -> str:

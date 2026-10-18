@@ -51,7 +51,7 @@ PLUGIN_VENDORS = (r"(fabfilter|native.?instruments|native.?access|komplete|konta
 # files (never folders), and their "risk" ("safe"/"review") is shown next to
 # the suggestion.
 # Bump when the default rules change, so saved settings pick up the new ones.
-RULES_VERSION = 2
+RULES_VERSION = 3
 
 DEFAULT_CONFIG = {
     "rules_version": RULES_VERSION,
@@ -89,8 +89,20 @@ DEFAULT_CONFIG = {
          "action": "move", "dest": "{cloud}/Music/Samples"},
         {"name": "Ableton packs & presets", "when": {"ext": [".alp", ".adg", ".adv", ".alc", ".ams"]},
          "action": "move", "dest": "{cloud}/Music/Ableton Library"},
-        {"name": "Bounces & audio", "when": {"category": ["audio"]},
+        # Audio files, in this order (first match wins):
+        {"name": "Downloaded tracks (FLAC)", "when": {"kind": ["file"], "ext": [".flac"]},
+         "describe": "FLAC files (tracks you downloaded to listen to or sample; you never bounce FLAC)",
+         "action": "move", "dest": "{cloud}/Music/Samples/Source Tracks"},
+        {"name": "Finished masters", "when": {"kind": ["file"], "category": ["audio"], "name_regex": r"\bMASTER\b",
+                                              "match_case": True},
+         "describe": "audio files with MASTER (in capitals) in the name, e.g. “Song (MASTER 24-bit 48k).wav”",
+         "action": "move", "dest": "{cloud}/Music/Releases"},
+        {"name": "My bounces", "when": {"kind": ["file"], "category": ["audio"], "name_regex": r"\bv\d+\b"},
+         "describe": "audio files with a version number like V10 or v3, e.g. “Blackout Remix V10.wav”",
          "action": "move", "dest": "{cloud}/Music/Bounces/{year}"},
+        {"name": "Stems & sketches", "when": {"kind": ["file"], "category": ["audio"]},
+         "describe": "any other audio files (pieces of tracks, stems, sketches)",
+         "action": "move", "dest": "{cloud}/Music/Bounces/Stems & Sketches/{year}"},
         {"name": "Plugins", "when": {"category": ["plugin"]},
          "action": "move", "dest": "{cloud}/Music/Plugin Installers"},
         {"name": "Images", "when": {"category": ["image"]},
@@ -143,7 +155,8 @@ def migrate_rules(saved: list) -> list:
         days = (mine.get("when") or {}).get("older_than_days")
         if days is not None and "older_than_days" in r["when"] and r["name"] not in old_defaults:
             r["when"]["older_than_days"] = days
-    custom = [r for r in saved if r.get("name") not in default_names]
+    retired = {"Bounces & audio"}  # replaced by the four audio rules (v3)
+    custom = [r for r in saved if r.get("name") not in default_names and r.get("name") not in retired]
     return defaults + custom
 
 

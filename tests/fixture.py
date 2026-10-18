@@ -88,6 +88,16 @@ def library_cfg(home: Path, user_library_parent: Path, packs: list, places: list
             f'</ContentLibrary></Ableton>').encode()
 
 
+def prefs_cfg(recent) -> bytes:
+    """A stand-in for Live's binary Preferences.cfg: junk around a recent-documents
+    list of length-prefixed UTF-16 paths, most recent first."""
+    out = b"Ab\x00\x01\xff\x10junk" + bytes(range(32))
+    for path in recent:
+        raw = str(path).encode("utf-16-le")
+        out += len(raw).to_bytes(4, "little") + raw + b"\x00\x00\x07\x00"
+    return out + b"\x00\x01tail"
+
+
 def project(root: Path, name: str, samples=(), external=(), missing=(), age_days=0, backups=0) -> Path:
     p = root / name
     (p / "Ableton Project Info").mkdir(parents=True, exist_ok=True)
@@ -131,6 +141,13 @@ def build(home: Path) -> Path:
     write(dl / "Installer Bundle" / "LICENSE KEY.txt", b"ABCD-1234", age_days=40)
     write(dl / "report copy.pdf", b"%PDF-1.7 " + bytes(1_200_000), age_days=10)
     write(dl / "final mix v3.wav", size=1_200_000, age_days=5, seed=5)
+    # Audio naming: V-numbers are my bounces, MASTER (caps) is finished, FLAC is downloaded music.
+    write(dl / "Blackout Remix V10.wav", size=90_000, age_days=3, seed=30)
+    write(dl / "Blackout (MASTER 24-bit 48k).wav", size=90_000, age_days=3, seed=31)
+    write(dl / "Some Artist - Night Drive.flac", size=90_000, age_days=3, seed=32)
+    write(dl / "Night Drive v2 (MASTER 24-bit 48k).flac", size=90_000, age_days=3, seed=33)
+    write(dl / "drum stem.wav", size=90_000, age_days=3, seed=34)
+    write(dl / "master plan idea.wav", size=90_000, age_days=3, seed=35)
     write(dl / "Screenshot 2026-07-01 at 10.00.00.png", size=200_000, age_days=90, seed=6)
     write(dl / "lease agreement.pdf", b"%PDF-1.7 fake", age_days=60)
     write(dl / "mystery_file", b"%PDF-1.4 no extension", age_days=8)
@@ -182,6 +199,11 @@ def build(home: Path) -> Path:
     # Elsewhere: a stray copy of a project and a big old file.
     project(home / "Music" / "Ableton" / "Projects", "Song A Project", samples=["lead.wav"], age_days=420)
     write(home / "Documents" / "old export.mov", size=2_000_000, age_days=400, seed=12)
+
+    # Live's recently opened sets: Song B last, then the Desktop song, then a set that's gone.
+    write(home / "Library" / "Preferences" / "Ableton" / "Live 12.4.6" / "Preferences.cfg",
+          prefs_cfg([abl / "Song B Project" / "Song B.als", desk / "Current Song Project" / "Current Song.als",
+                     home / "Music" / "Deleted Project" / "Deleted.als"]))
 
     # Library: caches.
     write(home / "Library" / "Caches" / "com.spotify.client" / "Data" / "blob", size=21_000_000, seed=13)

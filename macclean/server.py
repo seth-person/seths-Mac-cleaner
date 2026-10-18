@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, ableton, actions, config, db, inbox, purge, safety, survey, updater
+from . import __version__, ableton, actions, config, db, inbox, marks, purge, safety, survey, updater
 from .scanner import BackgroundScan
 
 STATIC = Path(__file__).parent / "static"
@@ -120,6 +120,26 @@ def api_packs(q):
     if not con:
         return {"has_scan": False}
     return {"has_scan": True, **ableton.packs_overview(con, config.load_config())}
+
+
+def post_ableton_mark(body):
+    if not isinstance(body.get("path"), str) or not os.path.isabs(body["path"]):
+        return {"ok": False, "error": "Pick a project to mark"}
+    marks.set_important(body["path"], bool(body.get("important")))
+    return {"ok": True}
+
+
+def post_ableton_recheck(body):
+    con = _con()
+    if not con:
+        return {"ok": False, "error": "Scan first"}
+    known = con.execute("SELECT 1 FROM dirs WHERE kind='ableton-project' AND path=?", (body.get("project"),)).fetchone()
+    if not known:
+        return {"ok": False, "error": "That isn't a project from the last scan. Rescan to pick it up."}
+    try:
+        return {"ok": True, **ableton.recheck_project(con, body["project"])}
+    except (OSError, KeyError) as e:
+        return {"ok": False, "error": str(e)}
 
 
 def api_ableton(q):
@@ -282,6 +302,7 @@ GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": ap
        "/api/update": api_update}
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
         "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal, "/api/open-trash": post_open_trash,
+        "/api/ableton/mark": post_ableton_mark, "/api/ableton/recheck": post_ableton_recheck,
         "/api/update/install": post_update_install, "/api/update/rollback": post_update_rollback,
         "/api/update/token": post_update_token, "/api/update/migrate": post_update_migrate, "/api/quit": post_quit}
 

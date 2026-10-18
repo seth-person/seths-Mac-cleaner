@@ -121,6 +121,17 @@ class InboxTests(FakeHome):
         self.assertTrue(it["Old Song Project"]["suggestion"]["dest"].endswith("Ableton Projects/Active"))
         self.assertEqual(it["mystery_file"]["category"], "document")  # sniffed from %PDF
 
+    def test_audio_is_sorted_by_how_it_is_named(self):
+        it = self.items()
+        dest = lambda n: it[n]["suggestion"]["dest"]
+        self.assertTrue(dest("Blackout Remix V10.wav").endswith("Music/Bounces/2026"))
+        self.assertTrue(dest("final mix v3.wav").endswith("Music/Bounces/2026"))
+        self.assertTrue(dest("Blackout (MASTER 24-bit 48k).wav").endswith("Music/Releases"))
+        self.assertTrue(dest("Some Artist - Night Drive.flac").endswith("Music/Samples/Source Tracks"))
+        self.assertTrue(dest("Night Drive v2 (MASTER 24-bit 48k).flac").endswith("Samples/Source Tracks"))  # FLAC wins
+        self.assertTrue(dest("drum stem.wav").endswith("Bounces/Stems & Sketches/2026"))
+        self.assertTrue(dest("master plan idea.wav").endswith("Bounces/Stems & Sketches/2026"))  # lowercase isn't MASTER
+
     def test_desktop_is_left_alone_while_active(self):
         it = self.items()
         self.assertEqual(it["notes.txt"]["suggestion"]["action"], "keep")
@@ -312,6 +323,82 @@ class PackAndPresetTests(FakeHome):
         self.assertTrue(info["default_template"].endswith("Templates/Default.als"))
 
 
+class AbletonSectionTests(FakeHome):
+    """The Ableton section: recently opened, important marks, and Collect All."""
+
+    def projects(self):
+        return {p["name"]: p for p in ableton.overview(self.con, self.cfg)["projects"]}
+
+    def test_recently_opened_comes_from_lives_settings(self):
+        ov = ableton.overview(self.con, self.cfg)
+        self.assertTrue(ov["recent_from_live"])
+        p = {x["name"]: x for x in ov["projects"]}
+        self.assertEqual(p["Song B Project"]["opened_rank"], 0)
+        self.assertEqual(p["Current Song Project"]["opened_rank"], 1)
+        self.assertIsNone(p["Old Song Project"]["opened_rank"])
+        self.assertTrue(p["Current Song Project"]["newest_set"].endswith("Current Song Project/Current Song.als"))
+
+    def test_recent_sets_reads_both_text_encodings(self):
+        from macclean import live_prefs
+        cfg = self.home / "Library" / "Preferences" / "Ableton" / "Live 12.4.6" / "Preferences.cfg"
+        original = cfg.read_bytes()
+        try:
+            cfg.write_bytes(fixture.prefs_cfg(["/Users/me/Café Project/Café.als"])
+                            + b"\x00\x09/Users/me/Plain Project/Plain.als\x00"
+                            + fixture.prefs_cfg(["/Users/me/Café Project/Café.als"]))
+            self.assertEqual(live_prefs.recent_sets(),
+                             ["/Users/me/Café Project/Café.als", "/Users/me/Plain Project/Plain.als"])
+            cfg.write_bytes(b"\x00\x01 no sets here")
+            self.assertEqual(live_prefs.recent_sets(), [])
+            self.assertFalse(ableton.overview(self.con, self.cfg)["recent_from_live"])
+        finally:
+            cfg.write_bytes(original)
+
+    def test_important_marks_follow_moves_and_names(self):
+        from macclean import marks
+        song_b = self.projects()["Song B Project"]["path"]
+        marks.set_important(song_b, True)
+        try:
+            self.assertTrue(self.projects()["Song B Project"]["important"])
+            self.assertFalse(self.projects()["Current Song Project"]["important"])
+            # moved by Mac Cleaner: the mark goes with it
+            marks.moved(song_b, "/elsewhere/Song B Project")
+            self.assertIn("/elsewhere/Song B Project", marks.load()["important"])
+            # moved in Finder: still matched by folder name
+            self.assertTrue(marks.is_important("/anywhere/Song B Project", marks.important_lookup()))
+            marks.set_important("/elsewhere/Song B Project", False)
+            self.assertFalse(self.projects()["Song B Project"]["important"])
+        finally:
+            for k in list(marks.load()["important"]):
+                marks.set_important(k, False)
+
+    def test_needs_collect_lists_external_and_missing(self):
+        p = self.projects()
+        self.assertEqual(p["Old Song Project"]["status"], "external")
+        self.assertEqual(p["Old Song Project"]["external_total"], 1)
+        self.assertEqual(p["Song B Project"]["status"], "missing")
+        self.assertEqual(p["Song B Project"]["missing_total"], 1)
+        self.assertEqual(p["Song A Project"]["status"], "ok")
+
+    def test_recheck_after_collect_all(self):
+        from macclean import safety
+        proj = Path(self.projects()["Old Song Project"]["path"])
+        chop = self.home / "Downloads" / "vocal chop.wav"
+        self.assertTrue(safety.UsedIndex(self.con).users(str(chop)))
+        # what Collect All and Save does: copy the sample in and point the set at the copy
+        collected = proj / "Samples" / "Collected" / "vocal chop.wav"
+        collected.parent.mkdir(parents=True)
+        shutil.copy2(chop, collected)
+        pad = proj / "Samples" / "Imported" / "pad.wav"
+        (proj / "Old Song.als").write_bytes(fixture.als_xml(
+            [(str(pad), "Samples/Imported/pad.wav"), (str(collected), "Samples/Collected/vocal chop.wav")]))
+        r = ableton.recheck_project(self.con, str(proj))
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(self.projects()["Old Song Project"]["status"], "ok")
+        self.assertFalse(safety.UsedIndex(self.con).users(str(chop)))  # no longer tied to the set
+        self.assertTrue(safety.UsedIndex(self.con).users(str(collected)))
+
+
 class ActionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -416,6 +503,14 @@ class ActionTests(unittest.TestCase):
         self.assertEqual((rules["Images"]["dest"], rules["Images"]["enabled"]), ("~/Pics", False))  # kept edits
         self.assertIn("My own rule", rules)
         self.assertIn("Plugin & instrument installers", rules)
+        self.assertIn("My bounces", rules)
+
+    def test_old_catch_all_audio_rule_is_retired(self):
+        old = [{"name": "Bounces & audio", "when": {"category": ["audio"]}, "action": "move", "dest": "~/X"}]
+        config.config_path().write_text(json.dumps({"inboxes": ["~/Downloads"], "rules": old, "rules_version": 2}))
+        names = [r["name"] for r in config.load_config()["rules"]]
+        self.assertNotIn("Bounces & audio", names)
+        self.assertIn("Finished masters", names)
 
     def test_icloud_drive_shorthand_expands(self):
         p = config.expand("iCloud Drive/Documents/2026", self.cfg)
@@ -451,6 +546,20 @@ class ServerTests(FakeHome):
         for p in ("/api/status", "/api/overview", "/api/tree", "/api/inbox", "/api/purge",
                   "/api/ableton", "/api/config", "/api/history", "/api/destinations"):
             self.assertNotIn("error", self.req(p), p)
+
+    def test_ableton_mark_and_recheck(self):
+        song = next(p for p in self.req("/api/ableton")["projects"] if p["name"] == "Song A Project")
+        self.assertTrue(self.req("/api/ableton/mark", {"path": song["path"], "important": True})["ok"])
+        try:
+            again = {p["path"]: p for p in self.req("/api/ableton")["projects"]}
+            self.assertTrue(again[song["path"]]["important"])
+        finally:
+            self.req("/api/ableton/mark", {"path": song["path"], "important": False})
+        r = self.req("/api/ableton/recheck", {"project": song["path"]})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["status"], "ok")
+        # only projects from the scan, not any folder on disk
+        self.assertFalse(self.req("/api/ableton/recheck", {"project": str(self.home)})["ok"])
 
     def test_page_has_token(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/") as r:

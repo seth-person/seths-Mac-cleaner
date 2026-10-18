@@ -93,7 +93,7 @@ def _matches(rule: dict, item: dict) -> bool:
         return False
     if "kind" in w and item["kind"] not in w["kind"]:
         return False
-    if "name_regex" in w and not re.search(w["name_regex"], item["name"], re.I):
+    if "name_regex" in w and not re.search(w["name_regex"], item["name"], 0 if w.get("match_case") else re.I):
         return False
     if "older_than_days" in w and item["age_days"] < float(w["older_than_days"]):
         return False

@@ -69,6 +69,8 @@ def move(src, dest_dir, cfg: dict | None = None, dry_run: bool = False, note: st
         return {"op": "move", "src": str(src), "dst": str(target), "dry_run": True}
     dest_dir.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(target))
+    from . import marks
+    marks.moved(str(src), str(target))
     return _log({"op": "move", "src": str(src), "dst": str(target), "note": note})
 
 
@@ -156,6 +158,8 @@ def undo(action_id: str) -> dict:
         raise ActionError(f"Something already exists at {src}")
     os.makedirs(os.path.dirname(src), exist_ok=True)
     shutil.move(dst, src)
+    from . import marks
+    marks.moved(dst, src)
     return _log({"op": "undo", "undoes": action_id, "src": dst, "dst": src})
 
 

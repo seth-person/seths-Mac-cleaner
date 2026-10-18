@@ -69,7 +69,7 @@ doesn't update itself. The Updates panel offers to install the app instead.
 | **Explore** | A drillable treemap of any folder from the scan. Toggle between space used *on this Mac* and *including iCloud-only* files. Select items to move or trash them. |
 | **Catch-alls** | Every loose item in Downloads and Desktop with its type, size, age and a suggested destination from your rules. Change any suggestion, tick the boxes, and apply. Desktop counts as an *active workspace*, so its items are left alone until they haven't been touched for 21 days. |
 | **Cleanup** | Things you probably don't need: app caches, unfinished downloads, zips you've already unzipped, duplicates, Ableton auto-backups, `.asd` files and Live's temporary recordings. Each is marked **Safe** (rebuilt automatically, or an exact copy of something you keep) or **Check first**. It never suggests anything an Ableton set uses, anything inside a project or a sound library (Packs, User Library, Splice, Kontakt…), or your app data folders. Big old files are listed for information only. |
-| **Music** | Every Ableton project on the Mac, where it lives, and whether it's self-contained. You can move projects into status buckets inside `iCloud Drive/Ableton Projects`. **Factory Packs** lists each installed Pack and which sets and presets (including User Library racks) use it. |
+| **Ableton** | **Recent**: projects in the order Live last opened them (read from Live's settings; falls back to last saved). **Important**: projects you've starred, least recently touched first. **Collect All**: every project that uses files from outside its folder or has missing ones, with Show in Finder and a Re-check button. **All projects**: where each lives, whether it's self-contained, and moving into status buckets inside `iCloud Drive/Ableton Projects`. **Factory Packs**: each installed Pack and which sets and presets (including User Library racks) use it. |
 | **Rules** | The rules behind the suggestions, editable as JSON (stored in `~/.macclean/config.json`). |
 | **History** | Every move and trash, each with an Undo button. |
 
@@ -118,7 +118,10 @@ iCloud Drive/
 │   └── Archive/       old or abandoned
 ├── Music/
 │   ├── Samples/           sample packs
-│   ├── Bounces/2026/      mixdowns and masters
+│   ├── Releases/          finished masters (“… (MASTER 24-bit 48k).wav”)
+│   ├── Bounces/2026/      your versioned bounces (“Song V10.wav”)
+│   ├── Bounces/Stems & Sketches/2026/   other audio: pieces, stems
+│   ├── Samples/Source Tracks/   downloaded FLAC tracks for sampling
 │   ├── Ableton Library/   .adg/.adv/.alp presets and packs
 │   └── Plugin Installers/
 ├── Documents/2026/

@@ -133,3 +133,46 @@ def installed_packs(info: dict | None = None) -> list:
 def pack_folders(info: dict | None = None) -> list:
     """Every folder that holds installed Packs (usually ~/Music/Ableton/Factory Packs)."""
     return sorted({os.path.dirname(p["path"]) for p in installed_packs(info)} | {default_packs_dir()})
+
+
+# Paths of sets Live recently opened. Live keeps its recent-documents list in
+# Preferences.cfg (a binary file) as text; we pick out every absolute path to an
+# .als, in the order Live stores them (most recent first), whichever text
+# encoding it used.
+_UTF16_ALS = re.compile(rb"/\x00(?:[^\x00-\x1f]\x00|[\x00-\xff][\x01-\xff]){1,500}?\.\x00a\x00l\x00s\x00")
+_UTF8_ALS = re.compile(rb"/[^\x00-\x1f]{1,1000}?\.als")
+
+
+def recent_sets() -> list:
+    """Absolute .als paths Live lists as recently opened (most recent first)."""
+    cfg = library_cfg_path()
+    root = cfg.parent if cfg else None
+    if root is None:
+        try:
+            dirs = [d for d in prefs_root().iterdir() if d.name.startswith("Live ")]
+        except OSError:
+            return []
+        if not dirs:
+            return []
+        root = max(dirs, key=lambda d: _version_key(d.name))
+    try:
+        data = (root / "Preferences.cfg").read_bytes()
+    except OSError:
+        return []
+    found = []
+    for m in _UTF16_ALS.finditer(data):
+        try:
+            found.append((m.start(), m.group().decode("utf-16-le")))
+        except UnicodeDecodeError:
+            pass
+    for m in _UTF8_ALS.finditer(data):
+        try:
+            found.append((m.start(), m.group().decode("utf-8")))
+        except UnicodeDecodeError:
+            pass
+    out, seen = [], set()
+    for _, p in sorted(found):
+        if p.startswith("/") and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out

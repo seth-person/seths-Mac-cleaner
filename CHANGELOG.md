@@ -2,6 +2,20 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.7.0
+
+- **Music is now Ableton**, with new tabs:
+  - **Recent**: your projects in the order Live last opened them, read from Live's own settings. If Mac Cleaner can't read that list, it goes by when each project was last saved.
+  - **Important**: click the ☆ next to any project to star it. Starred projects are listed with the one you haven't touched longest first, so nothing slips through the cracks. Stars follow a project when Mac Cleaner moves it.
+  - **Collect All**: every project that uses samples from outside its folder, or has missing ones. Each shows which files are involved.
+    - **Show in Finder** takes you to the set. Open it, Collect All and Save, then click **Re-check**: the project drops off the list without a full rescan.
+- **Audio in Downloads and Desktop is sorted by how it's named:**
+  - **FLAC** files are downloaded tracks → `Music/Samples/Source Tracks`.
+  - **MASTER** in capitals, e.g. “Blackout (MASTER 24-bit 48k)”, is a finished song → `Music/Releases`.
+  - A **version number**, e.g. “Blackout Remix V10”, is one of your bounces → `Music/Bounces/<year>`.
+  - **Anything else** is a stem or sketch → `Music/Bounces/Stems & Sketches/<year>`.
+  - The old single “Bounces & audio” rule is replaced. Your other rule changes are kept.
+
 ## 0.6.0
 
 - **Presets and racks now count.** Mac Cleaner now reads the racks and presets in your User Library (and anywhere else), not just sets. A Pack or sample that only a rack uses is now protected too: for example, the Drive and Glow samples loaded by [dnksaus] Stock Drum Selecta.
