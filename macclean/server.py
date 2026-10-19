@@ -147,6 +147,22 @@ def post_ableton_recheck(body):
     return {"ok": True, **res}
 
 
+def post_ableton_open(body):
+    """Open a set in Live (whatever app opens .als files). Only sets from the last scan."""
+    path = body.get("path")
+    con = _con()
+    if not con or not isinstance(path, str) or not path.lower().endswith(".als"):
+        return {"ok": False, "error": "Pick a set to open"}
+    if not con.execute("SELECT 1 FROM ableton_sets WHERE path=?", (path,)).fetchone():
+        return {"ok": False, "error": "That set isn't in the last scan. Rescan to pick it up."}
+    if not os.path.isfile(path):
+        return {"ok": False, "error": "That set isn't there any more. Rescan to update the list."}
+    if sys.platform != "darwin":
+        return {"ok": False, "error": "Opening sets in Live only works on macOS"}
+    r = subprocess.run(["open", path], capture_output=True, text=True, check=False)
+    return {"ok": r.returncode == 0, "error": (r.stderr or "Live couldn't open it").strip() if r.returncode else None}
+
+
 def api_ableton(q):
     con = _con()
     if not con:
@@ -308,6 +324,7 @@ GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": ap
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
         "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal, "/api/open-trash": post_open_trash,
         "/api/ableton/mark": post_ableton_mark, "/api/ableton/recheck": post_ableton_recheck,
+        "/api/ableton/open": post_ableton_open,
         "/api/update/install": post_update_install, "/api/update/rollback": post_update_rollback,
         "/api/update/token": post_update_token, "/api/update/migrate": post_update_migrate, "/api/quit": post_quit}
 

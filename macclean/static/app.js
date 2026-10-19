@@ -828,13 +828,49 @@ function starButton(p, after) {
   return btn;
 }
 
-const finderButton = (p) => h("button", { class: "btn small", title: "Show the set in Finder",
-  onclick: (e) => { e.stopPropagation(); reveal(p.newest_set || p.path); } }, "Show in Finder");
+const finderButton = (p) => h("button", { class: "btn small", title: "Show the project folder in Finder",
+  onclick: (e) => { e.stopPropagation(); reveal(p.path); } }, "Show in Finder");
+const agoText = (ts) => { const v = fmt.ago(ts); return ["today", "yesterday", "—"].includes(v) ? v : v + " ago"; };
+const setName = (path) => path.split("/").pop().replace(/\.als$/i, "");
+
+function openInLive(path) {
+  post("/api/ableton/open", { path }).then((r) => toast(r.ok ? `Opening ${setName(path)} in Live…` : r.error)).catch((e) => toast(e.message));
+}
+
+function setStatus(s) {
+  if (s.error) return statusPill("neutral", "Couldn't read", s.error);
+  if (s.missing) return statusPill("critical", `${s.missing} missing`, "Files this set uses that can't be found");
+  if (s.external) return statusPill("warning", `${s.external} outside project`, "Needs Collect All and Save");
+  return statusPill("good", "Self-contained");
+}
+
+function setExamples(s) {
+  return [(s.examples.external || []).length ? h("div", { class: "path" }, "Elsewhere: ", s.examples.external.map(pretty).join(" · ")) : null,
+    missingList(s)];
+}
+
+// Every set in a project folder (never the Backup copies), each with its own status,
+// so a problem in one set isn't mistaken for the whole project.
+function setList(p, withDetails) {
+  if (!p.sets.length) return null;
+  return h("div", { class: "set-list" }, p.sets.map((s) => h("div", { class: "set-item" },
+    h("div", { class: "set-line" },
+      h("span", { class: "set-name", title: s.path }, setName(s.path)),
+      p.sets.length > 1 && s.path === p.newest_set ? h("span", { class: "chip" }, "latest") : null,
+      setStatus(s),
+      h("span", { class: "muted" }, [s.mtime ? "saved " + agoText(s.mtime) : "", (s.version || "").replace("Ableton Live ", "Live ")].filter(Boolean).join(" · ")),
+      h("span", { class: "spacer" }),
+      h("button", { class: "btn small", title: "Open this set in Live", onclick: (e) => { e.stopPropagation(); openInLive(s.path); } }, "Open in Live"),
+      h("button", { class: "btn small", title: "Show this set in Finder", onclick: (e) => { e.stopPropagation(); reveal(s.path); } }, "Show")),
+    withDetails && (s.external || s.missing) ? h("div", { class: "set-details" }, setExamples(s)) : null)));
+}
 
 function samplesStatus(p) {
+  const bad = p.sets.filter((s) => s.missing || s.external).length;
+  const which = p.sets.length > 1 && bad ? ` · ${bad} of ${p.sets.length} sets` : "";
   if (p.status === "ok") return statusPill("good", "Self-contained");
-  if (p.status === "missing") return statusPill("critical", `${p.missing_total} missing`, "Live can't find these files");
-  if (p.status === "external") return statusPill("warning", `${p.external_total} outside project`, "Needs Collect All and Save");
+  if (p.status === "missing") return statusPill("critical", `${p.missing_total} missing${which}`, "Files a set uses that can't be found. The set list says which set.");
+  if (p.status === "external") return statusPill("warning", `${p.external_total} outside project${which}`, "Needs Collect All and Save. The set list says which set.");
   if (p.status === "no-sets") return statusPill("neutral", "No sets");
   return statusPill("neutral", "Couldn't check", "Only in iCloud, or unreadable");
 }
@@ -844,13 +880,14 @@ function projectTable(projects, cols) {
     cols.map((c) => h("th", { class: c.num ? "num" : "" }, c.label)), h("th", {}))),
   h("tbody", {}, projects.map((p) => {
     const detail = h("tr", { class: "detail-row", hidden: true }, h("td", {}), h("td", { colspan: cols.length + 2 }, projectDetail(p)));
-    return [h("tr", {},
+    return [h("tr", { class: p.sets.length ? "has-sets" : "" },
       h("td", { class: "check" }, starButton(p)),
       h("td", { class: "name rowlink", onclick: () => (detail.hidden = !detail.hidden) },
         h("span", { class: "trunc", style: { color: "var(--accent)" } }, projName(p)),
         h("span", { class: "trunc path", title: p.path }, pretty(p.parent))),
       cols.map((c) => h("td", { class: c.num ? "num ink2" : "" }, c.cell(p))),
-      h("td", { style: { width: "1%" } }, finderButton(p))), detail];
+      h("td", { style: { width: "1%" } }, finderButton(p))),
+      p.sets.length ? h("tr", { class: "sets-row" }, h("td", {}), h("td", { colspan: cols.length + 2 }, setList(p))) : null, detail];
   })));
 }
 
@@ -924,9 +961,6 @@ function collectView(root, data, head) {
       }
     }
   };
-  const examples = (s) => [
-    (s.examples.external || []).length ? h("div", { class: "path" }, "Elsewhere: ", s.examples.external.map(pretty).join(" · ")) : null,
-    missingList(s)];
   const collectRow = (p, justChecked) => {
     const sets = p.sets.filter((s) => s.external || s.missing);
     const done = p.status === "ok";
@@ -934,16 +968,13 @@ function collectView(root, data, head) {
     const hasMissing = sets.some((s) => s.missing);
     const row = h("div", { class: "collect-row" + (justChecked ? " checked" : "") },
       h("div", { class: "toolbar" }, starButton(p),
-        h("div", { style: { minWidth: 0, flex: "1 1 240px" } }, h("b", {}, projName(p)), " ", h("span", { class: "ink2" }, fmt.ago(p.mtime) + " ago"),
+        h("div", { style: { minWidth: 0, flex: "1 1 240px" } }, h("b", {}, projName(p)), " ", h("span", { class: "ink2" }, agoText(p.mtime)),
           h("div", { class: "trunc path", title: p.path }, pretty(p.path))),
         done ? statusPill("good", "Self-contained now") : samplesStatus(p), finderButton(p),
         hasMissing ? h("button", { class: "btn small", title: "Copy what Mac Cleaner found, to paste into a message",
           onclick: () => copyDetails(p) }, "Copy details") : null,
         done ? null : btn),
-      done ? null : h("div", { class: "collect-sets" }, sets.map((s) => h("div", {},
-        h("span", {}, s.path.split("/").pop()), h("span", { class: "ink2" },
-          ` — ${s.external ? `${s.external} outside the project` : ""}${s.external && s.missing ? ", " : ""}${s.missing ? `${s.missing} missing` : ""}`),
-        examples(s)))));
+      h("div", { class: "collect-sets" }, setList(p, true)));
     btn.onclick = () => recheck(p, row, btn);
     return row;
   };
@@ -953,7 +984,7 @@ function collectView(root, data, head) {
     h("div", { class: "card note", style: { marginBottom: "14px" } },
       h("h2", {}, "How to fix each one"),
       h("ol", {},
-        h("li", {}, "Click ", h("b", {}, "Show in Finder"), " and double-click the set to open it in Live."),
+        h("li", {}, "Click ", h("b", {}, "Open in Live"), " next to the set that needs it. Each set in a project folder is listed separately."),
         h("li", {}, data.collect_steps),
         h("li", {}, "Back here, click ", h("b", {}, "Re-check"), ". The project drops off this list once it's self-contained.")),
       h("p", { class: "ink2" }, h("b", {}, "Missing"), " files are ones Mac Cleaner can't find (often old paths, or samples on a drive that isn't plugged in). ",
@@ -966,9 +997,10 @@ function collectView(root, data, head) {
     loose.length ? h("div", { class: "card", style: { marginTop: "14px" } }, h("h2", {}, `Sets outside a project folder (${loose.length})`),
       h("p", { class: "ink2" }, "Open each in Live, use File → Save Live Set As… to give it its own project folder, then Collect All and Save."),
       h("table", {}, h("tbody", {}, loose.map((s) => h("tr", {},
-        h("td", { class: "name" }, h("span", { class: "trunc" }, pretty(s.path)), examples(s)),
+        h("td", { class: "name" }, h("span", { class: "trunc" }, pretty(s.path)), setExamples(s)),
         h("td", {}, statusPill(s.missing ? "critical" : "warning", `${s.external + s.missing} files elsewhere`)),
-        h("td", { style: { width: "1%" } }, h("button", { class: "btn small", onclick: () => reveal(s.path) }, "Show in Finder"))))))) : "",
+        h("td", { style: { width: "1%", whiteSpace: "nowrap" } }, h("button", { class: "btn small", onclick: () => openInLive(s.path) }, "Open in Live"), " ",
+          h("button", { class: "btn small", onclick: () => reveal(s.path) }, "Show"))))))) : "",
     unchecked.length ? h("div", { class: "card", style: { marginTop: "14px" } }, h("h2", {}, `Couldn't check (${unchecked.length})`),
       h("p", { class: "ink2" }, "These sets are only in iCloud or couldn't be read. In Finder, right-click the folder → Download Now, then rescan."),
       h("table", {}, h("tbody", {}, unchecked.map((p) => h("tr", {},
@@ -1099,15 +1131,6 @@ VIEWS.music = async (root) => {
     if (age < 365 && b.includes("Ideas")) return "Ideas";
     return b.includes("Archive") ? "Archive" : b[0];
   };
-  const statusEl = (p) => {
-    const ext = p.sets.reduce((a, s) => a + s.external, 0);
-    const miss = p.sets.reduce((a, s) => a + s.missing, 0);
-    if (p.status === "ok") return h("span", { class: "status good" }, h("span", { class: "dot" }), "Self-contained");
-    if (p.status === "missing") return h("span", { class: "status critical" }, h("span", { class: "dot" }), `${miss} missing`);
-    if (p.status === "external") return h("span", { class: "status warning" }, h("span", { class: "dot" }), `${ext} outside project`);
-    if (p.status === "no-sets") return h("span", { class: "status neutral" }, h("span", { class: "dot" }), "No sets");
-    return h("span", { class: "status neutral" }, h("span", { class: "dot" }), "iCloud only");
-  };
 
   const selected = new Map();
   const target = new Map();
@@ -1144,15 +1167,16 @@ VIEWS.music = async (root) => {
     const nameCell = h("td", { class: "name rowlink", onclick: () => (detail.hidden = !detail.hidden) },
       h("span", { class: "trunc", style: { color: "var(--accent)" } }, p.name.replace(/ Project$/, "")),
       p.possible_copies.length ? h("span", { class: "status warning" }, h("span", { class: "dot" }), `${p.possible_copies.length} possible cop${p.possible_copies.length > 1 ? "ies" : "y"}`) : null);
-    tbody.append(h("tr", {},
+    tbody.append(h("tr", { class: p.sets.length ? "has-sets" : "" },
       h("td", { class: "check" }, cb), h("td", { class: "check" }, starButton(p)), nameCell,
       h("td", { style: { maxWidth: "220px" } }, where),
-      h("td", {}, statusEl(p)),
+      h("td", {}, samplesStatus(p)),
       h("td", { class: "ink2" }, (p.version || "").replace("Ableton Live ", "")),
       h("td", { class: "num" }, fmt.size(p.alloc)),
       h("td", { class: "num ink2" }, fmt.ago(p.mtime)),
       h("td", { class: "num muted" }, p.backup_bytes ? fmt.size(p.backup_bytes) : ""),
-      h("td", {}, sel)), detail);
+      h("td", {}, sel)),
+      p.sets.length ? h("tr", { class: "sets-row" }, h("td", {}), h("td", {}), h("td", { colspan: 8 }, setList(p))) : "", detail);
   }
 
   const maxLoc = Math.max(1, ...data.locations.map((l) => l.count));
@@ -1167,7 +1191,8 @@ VIEWS.music = async (root) => {
       h("td", { class: "name" }, h("span", { class: "trunc" }, pretty(s.path))),
       h("td", {}, s.error ? h("span", { class: "muted" }, s.error) : s.external || s.missing
         ? h("span", { class: "status warning" }, h("span", { class: "dot" }), `${s.external + s.missing} files elsewhere`) : h("span", { class: "muted" }, "no samples")),
-      h("td", {}, h("button", { class: "btn small", onclick: () => reveal(s.path) }, "Show"))))))) : null;
+      h("td", { style: { width: "1%", whiteSpace: "nowrap" } }, h("button", { class: "btn small", onclick: () => openInLive(s.path) }, "Open in Live"), " ",
+        h("button", { class: "btn small", onclick: () => reveal(s.path) }, "Show"))))))) : null;
 
   root.replaceChildren(
     head,

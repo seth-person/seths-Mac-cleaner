@@ -60,7 +60,7 @@ class ScanTests(FakeHome):
 
     def test_ableton_projects_detected(self):
         n = self.con.execute("SELECT COUNT(*) FROM dirs WHERE kind='ableton-project'").fetchone()[0]
-        self.assertEqual(n, 5)
+        self.assertEqual(n, 6)
 
     def test_duplicates_skip_ableton_project_contents(self):
         paths = [r["path"] for r in self.con.execute("SELECT path FROM dupes")]
@@ -404,6 +404,20 @@ class AbletonSectionTests(FakeHome):
         ref = ableton.parse_set(str(path))["refs"][0]
         self.assertEqual(ref["where"], "Track “Drums” › Drum Rack › pad “Kick” › Simpler")
 
+    def test_each_set_in_a_project_is_listed_with_its_own_status(self):
+        remix = self.projects()["Remix Project"]
+        names = [os.path.basename(s["path"]) for s in remix["sets"]]
+        self.assertEqual(names, ["Remix.als", "Remix resampled.als"])  # newest first, no Backup copies
+        main, resampled = remix["sets"]
+        self.assertEqual((main["missing"], main["external"]), (0, 0))
+        self.assertEqual(resampled["missing"], 2)
+        self.assertTrue(main["mtime"] > resampled["mtime"])
+        self.assertTrue(remix["newest_set"].endswith("Remix.als"))
+        # the project still counts it: one of its sets needs fixing
+        self.assertEqual(remix["status"], "missing")
+        current = self.projects()["Current Song Project"]
+        self.assertFalse(any("/Backup/" in s["path"] for s in current["sets"]))
+
     def test_recheck_after_collect_all(self):
         from macclean import safety
         proj = Path(self.projects()["Old Song Project"]["path"])
@@ -586,6 +600,10 @@ class ServerTests(FakeHome):
         self.assertEqual(r["item"]["status"], "ok")
         # only projects from the scan, not any folder on disk
         self.assertFalse(self.req("/api/ableton/recheck", {"project": str(self.home)})["ok"])
+
+    def test_open_in_live_only_opens_scanned_sets(self):
+        for path in (str(self.home / "Downloads" / "Ozone 11.pkg"), "/bin/sh", str(self.home / "nope.als"), None):
+            self.assertFalse(self.req("/api/ableton/open", {"path": path})["ok"], path)
 
     def test_page_has_token(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/") as r:

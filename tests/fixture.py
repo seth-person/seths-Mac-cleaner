@@ -192,6 +192,11 @@ def build(home: Path) -> Path:
     abl = cloud / "Ableton Projects"
     project(abl / "Finished", "Song A Project", samples=["lead.wav"], age_days=400)
     project(abl, "Song B Project", samples=["drums.wav"], missing=["gone.wav"], age_days=200)
+    # Two sets in one project: the main one is fine, the resampled one next to it isn't.
+    remix = project(abl, "Remix Project", samples=["vox.wav"], age_days=2)
+    write(remix / "Remix resampled.als", als_xml([(str(remix / "Samples" / "Imported" / "vox.wav"), "Samples/Imported/vox.wav"),
+                                                  ("/Users/seth/Bounces/old print.wav", ""),
+                                                  ("/Users/seth/Downloads/acapella.flac", "")]), age_days=9)
     write(cloud / "Documents" / "taxes 2025.pdf", b"%PDF-1.7 taxes", age_days=200)
     write(cloud / "Documents" / "report.pdf", b"%PDF-1.7 " + bytes(1_200_000), age_days=30)
     write(cloud / "Music" / "Bounces" / "2025" / "song a master.wav", size=1_100_000, age_days=300, seed=8)

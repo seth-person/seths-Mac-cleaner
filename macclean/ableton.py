@@ -363,6 +363,7 @@ def overview(con, cfg) -> dict:
 
     project_paths = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")}
     sub = defaultdict(lambda: {"backup": 0, "asd": 0, "nbackups": 0, "newest": 0.0, "newest_set": None})
+    set_mtime = {}
     for r in con.execute("SELECT path, alloc FROM dirs WHERE name='Backup'"):
         if r["path"][: -len("/Backup")] in project_paths:
             sub[r["path"][: -len("/Backup")]]["backup"] = r["alloc"]
@@ -374,9 +375,11 @@ def overview(con, cfg) -> dict:
             sub[proj]["asd"] += r["alloc"]
         elif _is_backup(r["path"]):
             sub[proj]["nbackups"] += 1
-        elif r["mtime"] >= sub[proj]["newest"]:
-            sub[proj]["newest"] = r["mtime"]
-            sub[proj]["newest_set"] = r["path"]
+        else:
+            set_mtime[r["path"]] = r["mtime"]
+            if r["mtime"] >= sub[proj]["newest"]:
+                sub[proj]["newest"] = r["mtime"]
+                sub[proj]["newest_set"] = r["path"]
 
     # Live's own "recently opened" list, mapped to projects (0 = most recent).
     from . import live_prefs, marks
@@ -402,8 +405,11 @@ def overview(con, cfg) -> dict:
         item = {
             "path": p, "name": r["name"], "parent": r["parent"], "size": r["size"], "alloc": r["alloc"],
             "files": r["files"], "mtime": extra.get("newest") or r["mtime"], "in_library": in_lib, "bucket": bucket,
-            "sets": [{k: s[k] for k in ("path", "version", "refs", "in_project", "packs", "external",
-                                        "missing", "examples", "error")} for s in sets],
+            # every set in the folder (never the Backup copies), newest first
+            "sets": sorted(({**{k: s[k] for k in ("path", "version", "refs", "in_project", "packs", "external",
+                                                 "missing", "examples", "error")},
+                             "mtime": set_mtime.get(s["path"])} for s in sets),
+                           key=lambda s: -(s["mtime"] or 0)),
             "status": status, "backup_bytes": extra.get("backup") or 0,
             "backup_sets": extra.get("nbackups") or 0, "asd_bytes": extra.get("asd") or 0,
             "version": max((s["version"] for s in sets), default=""),

@@ -2,6 +2,13 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.7.2
+
+- **Each project now lists every set in its folder**, with its own status, when it was last saved and the Live version. Backup copies are left out.
+  - When one set has missing files and another doesn't, you can see which one. For example, a project shows “2 missing · 1 of 2 sets”, and the set list underneath points to the set with the problem.
+- **Open in Live** next to every set opens it straight from Mac Cleaner. **Show** finds it in Finder.
+- **Show in Finder** on a project now shows the project folder.
+
 ## 0.7.1
 
 - **Re-check no longer reloads the page.** The button shows a spinner while it reads the project, then updates just that project. You stay where you were on the list.
