@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, ableton, actions, config, db, inbox, marks, purge, safety, survey, updater
+from . import __version__, ableton, actions, config, db, inbox, listen, marks, purge, safety, survey, updater
 from .scanner import BackgroundScan
 
 STATIC = Path(__file__).parent / "static"
@@ -161,6 +162,19 @@ def post_ableton_open(body):
         return {"ok": False, "error": "Opening sets in Live only works on macOS"}
     r = subprocess.run(["open", path], capture_output=True, text=True, check=False)
     return {"ok": r.returncode == 0, "error": (r.stderr or "Live couldn't open it").strip() if r.returncode else None}
+
+
+def api_ableton_set(q):
+    """What you can listen to for one set: every matching export, and the audio it uses."""
+    con = _con()
+    path = (q.get("path") or [""])[0]
+    row = con.execute("SELECT project FROM ableton_sets WHERE path=?", (path,)).fetchone() if con else None
+    if not row:
+        return {"error": "That set isn't in the last scan. Rescan to pick it up."}
+    project = row["project"]
+    name = os.path.basename(project) if project else None
+    return {"path": path, "bounces": listen.bounces_for(con, path, name, limit=None),
+            "ingredients": listen.ingredients(con, path, project)}
 
 
 def api_ableton(q):
@@ -318,7 +332,7 @@ def post_reveal(body):
 
 
 GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": api_tree,
-       "/api/inbox": api_inbox, "/api/destinations": api_destinations, "/api/purge": api_purge, "/api/ableton": api_ableton, "/api/packs": api_packs,
+       "/api/inbox": api_inbox, "/api/destinations": api_destinations, "/api/purge": api_purge, "/api/ableton": api_ableton, "/api/ableton/set": api_ableton_set, "/api/packs": api_packs,
        "/api/config": api_config, "/api/history": api_history, "/api/survey": api_survey,
        "/api/update": api_update}
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
@@ -351,10 +365,57 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, default=str).encode())
 
+    def _audio(self, q):
+        """Stream an audio file for the in-app player, with byte ranges so it can seek."""
+        con = _con()
+        path = (q.get("path") or [""])[0]
+        if (q.get("t") or [""])[0] != TOKEN:
+            return self._send(403, b"forbidden", "text/plain")
+        if not con or not listen.playable(con, path):
+            return self._send(404, b"not found", "text/plain")
+        size = os.path.getsize(path)
+        start, end, code = 0, size - 1, 200
+        m = re.match(r"bytes=(\d*)-(\d*)$", (self.headers.get("Range") or "").strip())
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+            else:
+                start = max(0, size - int(m.group(2)))
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            code = 206
+        self.send_response(code)
+        self.send_header("Content-Type", listen.CONTENT_TYPES.get(os.path.splitext(path)[1].lower(), "application/octet-stream"))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if code == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = f.read(min(65536, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the player stopped or seeked elsewhere
+
     def do_GET(self):
         if not self._host_ok():
             return self._send(403, b"forbidden", "text/plain")
         u = urlparse(self.path)
+        if u.path == "/api/audio":
+            return self._audio(parse_qs(u.query))
         if u.path in GET:
             try:
                 return self._json(GET[u.path](parse_qs(u.query)))

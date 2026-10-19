@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import gzip
+import math
+import struct
 import os
 import sys
 import time
@@ -86,6 +88,14 @@ def library_cfg(home: Path, user_library_parent: Path, packs: list, places: list
             f'<PreferredFactoryPacksInstallationPath Value="" /><DefaultTemplateSet Value="{template}" />'
             f'<SpliceDownloadFolderModeMember Value="UserLibrary" /><CustomSpliceDownloadPathMember Value="" />'
             f'</ContentLibrary></Ableton>').encode()
+
+
+def tone_wav(freq: float, seconds: float = 14.0, rate: int = 44100) -> bytes:
+    """A real, playable mono 16-bit WAV (a quiet sine), about 1.2 MB for 14 s."""
+    n = int(seconds * rate)
+    frames = b"".join(struct.pack("<h", int(6000 * math.sin(2 * math.pi * freq * i / rate))) for i in range(n))
+    return (b"RIFF" + struct.pack("<I", 36 + len(frames)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+            + b"data" + struct.pack("<I", len(frames)) + frames)
 
 
 def prefs_cfg(recent) -> bytes:
@@ -197,6 +207,12 @@ def build(home: Path) -> Path:
     write(remix / "Remix resampled.als", als_xml([(str(remix / "Samples" / "Imported" / "vox.wav"), "Samples/Imported/vox.wav"),
                                                   ("/Users/seth/Bounces/old print.wav", ""),
                                                   ("/Users/seth/Downloads/acapella.flac", "")]), age_days=9)
+    # Exports of the Remix: matched to Remix.als by name, wherever they are.
+    write(cloud / "Music" / "Bounces" / "2026" / "Remix V2.wav", tone_wav(330), age_days=6)
+    write(cloud / "Music" / "Bounces" / "2026" / "Remix V3.wav", tone_wav(392), age_days=3)
+    write(cloud / "Music" / "Releases" / "Remix (MASTER 24-bit 48k).wav", tone_wav(440), age_days=1)
+    # Not an export: audio inside a project's Samples folder is an ingredient.
+    write(remix / "Samples" / "Processed" / "Remix.wav", size=1_200_000, seed=40, age_days=1)
     write(cloud / "Documents" / "taxes 2025.pdf", b"%PDF-1.7 taxes", age_days=200)
     write(cloud / "Documents" / "report.pdf", b"%PDF-1.7 " + bytes(1_200_000), age_days=30)
     write(cloud / "Music" / "Bounces" / "2025" / "song a master.wav", size=1_100_000, age_days=300, seed=8)

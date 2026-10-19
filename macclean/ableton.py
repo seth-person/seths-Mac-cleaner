@@ -424,6 +424,8 @@ def overview(con, cfg) -> dict:
     for item in projects:
         twins = [q for q in names[_base_name(item["name"])] if q != item["path"]]
         item["possible_copies"] = twins
+    from . import listen
+    listen.attach_bounces(con, projects, loose)
 
     locations = defaultdict(lambda: {"count": 0, "alloc": 0})
     for item in projects:

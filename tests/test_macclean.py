@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -418,6 +419,35 @@ class AbletonSectionTests(FakeHome):
         current = self.projects()["Current Song Project"]
         self.assertFalse(any("/Backup/" in s["path"] for s in current["sets"]))
 
+    def test_song_key_ignores_versions_and_master_tags(self):
+        from macclean import listen
+        self.assertEqual(listen.song_key("Blackout Remix V10.wav"), ("blackout remix", "10"))
+        self.assertEqual(listen.song_key("Blackout Remix (MASTER 24-bit 48k).wav"), ("blackout remix", None))
+        self.assertEqual(listen.song_key("/x/Blackout_Remix-v3.als"), ("blackout remix", "3"))
+        self.assertEqual(listen.song_key("Night Drive v2 (MASTER 24-bit 48k).flac"), ("night drive", "2"))
+        self.assertEqual(listen.song_key("vox.wav"), ("vox", None))  # "v" in a word isn't a version
+        self.assertEqual(listen.song_key("Remix Project"), ("remix", None))
+
+    def test_bounces_are_matched_to_sets_by_name(self):
+        remix = self.projects()["Remix Project"]
+        main, resampled = remix["sets"]
+        names = [b["name"] for b in main["bounces"]]
+        self.assertEqual(names, ["Remix (MASTER 24-bit 48k).wav", "Remix V3.wav", "Remix V2.wav"])  # newest first
+        self.assertFalse(any("/Samples/" in b["path"] for b in main["bounces"]))  # samples aren't exports
+        self.assertEqual(resampled["bounces"], [])  # a different song name
+
+    def test_bounce_with_the_sets_version_comes_first(self):
+        from macclean import listen
+        remix = self.projects()["Remix Project"]["path"]
+        ranked = listen.bounces_for(self.con, remix + "/Remix V2.als")
+        self.assertEqual(ranked[0]["name"], "Remix V2.wav")
+
+    def test_ingredients_are_the_audio_a_set_uses(self):
+        from macclean import listen
+        remix = self.projects()["Remix Project"]
+        found = listen.ingredients(self.con, remix["sets"][0]["path"], remix["path"])
+        self.assertEqual([(i["name"], i["where"]) for i in found], [("vox.wav", "project")])
+
     def test_recheck_after_collect_all(self):
         from macclean import safety
         proj = Path(self.projects()["Old Song Project"]["path"])
@@ -600,6 +630,30 @@ class ServerTests(FakeHome):
         self.assertEqual(r["item"]["status"], "ok")
         # only projects from the scan, not any folder on disk
         self.assertFalse(self.req("/api/ableton/recheck", {"project": str(self.home)})["ok"])
+
+    def test_audio_streams_only_scanned_audio_with_token(self):
+        bounce = self.cloud / "Music" / "Releases" / "Remix (MASTER 24-bit 48k).wav"
+        url = f"http://127.0.0.1:{self.port}/api/audio?" + urllib.parse.urlencode({"path": str(bounce), "t": self.server.TOKEN})
+        with urllib.request.urlopen(url) as r:
+            self.assertEqual(r.headers["Content-Type"], "audio/wav")
+            self.assertEqual(r.read(), bounce.read_bytes())
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Range": "bytes=100-199"})) as r:
+            self.assertEqual(r.status, 206)
+            self.assertEqual(r.read(), bounce.read_bytes()[100:200])
+            self.assertEqual(r.headers["Content-Range"], f"bytes 100-199/{bounce.stat().st_size}")
+        bad = [{"path": str(bounce)},  # no token
+               {"path": str(self.home / "Downloads" / "lease agreement.pdf"), "t": self.server.TOKEN},  # not audio
+               {"path": "/etc/hosts", "t": self.server.TOKEN}]
+        for q in bad:
+            with self.assertRaises(urllib.error.HTTPError):
+                urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/audio?" + urllib.parse.urlencode(q))
+
+    def test_set_listen_details(self):
+        remix = next(p for p in self.req("/api/ableton")["projects"] if p["name"] == "Remix Project")
+        d = self.req("/api/ableton/set?" + urllib.parse.urlencode({"path": remix["sets"][0]["path"]}))
+        self.assertEqual(len(d["bounces"]), 3)
+        self.assertEqual([i["name"] for i in d["ingredients"]], ["vox.wav"])
+        self.assertIn("error", self.req("/api/ableton/set?path=/etc/hosts"))
 
     def test_open_in_live_only_opens_scanned_sets(self):
         for path in (str(self.home / "Downloads" / "Ozone 11.pkg"), "/bin/sh", str(self.home / "nope.als"), None):

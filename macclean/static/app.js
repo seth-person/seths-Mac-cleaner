@@ -849,20 +849,93 @@ function setExamples(s) {
     missingList(s)];
 }
 
+// One player for the whole app: exports and samples play here, streamed by the engine.
+const player = {
+  el: null,
+  play(path, label) {
+    if (!this.el) {
+      this.audio = h("audio", { controls: true, preload: "auto" });
+      this.title = h("div", { class: "player-title" });
+      this.audio.addEventListener("error", () => {
+        if (this.audio.getAttribute("src")) toast("That file can't be played here. Use Show to find it in Finder.");
+      });
+      this.el = h("div", { class: "player", role: "region", "aria-label": "Player" },
+        h("div", { class: "player-head" }, this.title,
+          h("button", { class: "btn small", "aria-label": "Stop and close the player", onclick: () => this.stop() }, "✕")),
+        this.audio);
+      document.body.append(this.el);
+    }
+    this.title.replaceChildren(h("b", { class: "trunc" }, label), h("span", { class: "trunc path" }, pretty(path)));
+    this.audio.src = `/api/audio?path=${encodeURIComponent(path)}&t=${encodeURIComponent(TOKEN)}`;
+    this.el.hidden = false;
+    document.body.classList.add("playing");
+    this.audio.play().catch(() => {});
+  },
+  stop() {
+    this.audio.pause();
+    this.audio.removeAttribute("src");
+    this.audio.load();
+    this.el.hidden = true;
+    document.body.classList.remove("playing");
+  },
+};
+const stem = (name) => name.replace(/\.[^.]+$/, "");
+const playButton = (path, label, title) => h("button", { class: "btn small play", title: title || "Play " + label,
+  onclick: (e) => { e.stopPropagation(); player.play(path, label); } }, h("span", { "aria-hidden": "true" }, "▶ "), label);
+
+// Exports of the song, and every audio file the set uses. Fetched when you open it.
+async function listenPanel(s, panel) {
+  panel.replaceChildren(h("span", { class: "muted" }, h("span", { class: "spinner", "aria-hidden": "true" }), "Loading…"));
+  let d;
+  try {
+    d = await get("/api/ableton/set?path=" + encodeURIComponent(s.path));
+  } catch (e) {
+    return panel.replaceChildren(h("span", { class: "muted" }, e.message));
+  }
+  const WHERE = { project: "in project", library: "library", elsewhere: "outside project" };
+  const row = (path, label, meta) => h("div", { class: "listen-row" }, playButton(path, label),
+    h("span", { class: "muted" }, meta), h("span", { class: "spacer" }),
+    h("button", { class: "btn small", onclick: (e) => { e.stopPropagation(); reveal(path); } }, "Show"));
+  panel.replaceChildren(
+    h("div", { class: "listen-h" }, `Exports of this song (${d.bounces.length})`),
+    d.bounces.length ? h("div", {}, d.bounces.map((b) => row(b.path, stem(b.name),
+      [agoText(b.mtime), fmt.size(b.size), pretty(b.path.slice(0, b.path.lastIndexOf("/"))), b.icloud_only ? "in iCloud, downloads when played" : ""].filter(Boolean).join(" · "))))
+      : h("div", { class: "muted" }, "None found. Exports are matched by name: “", setName(s.path), " V3.wav” or “", setName(s.path), " (MASTER).wav” would count."),
+    h("div", { class: "listen-h" }, `Audio in this set (${d.ingredients.length})`),
+    d.ingredients.length ? h("div", {}, d.ingredients.map((i) => row(i.path, stem(i.name), [WHERE[i.where], fmt.size(i.size)].join(" · "))))
+      : h("div", { class: "muted" }, "No audio files: everything in it comes from MIDI and instruments."));
+}
+
+function listenControls(s) {
+  const b = (s.bounces || [])[0];
+  const panel = h("div", { class: "listen-panel", hidden: true });
+  const toggle = h("button", { class: "btn small", "aria-expanded": "false", title: "Exports of this song, and the audio files the set uses",
+    onclick: (e) => {
+      e.stopPropagation();
+      panel.hidden = !panel.hidden;
+      toggle.setAttribute("aria-expanded", String(!panel.hidden));
+      if (!panel.hidden && !panel.dataset.loaded) { panel.dataset.loaded = "1"; listenPanel(s, panel); }
+    } }, "What's in it");
+  const bounce = b ? playButton(b.path, stem(b.name), `Play the newest export: ${pretty(b.path)}`)
+    : h("span", { class: "muted", title: "No exported audio with this set's name was found" }, "no bounce yet");
+  return { bounce, toggle, panel };
+}
+
 // Every set in a project folder (never the Backup copies), each with its own status,
 // so a problem in one set isn't mistaken for the whole project.
 function setList(p, withDetails) {
   if (!p.sets.length) return null;
-  return h("div", { class: "set-list" }, p.sets.map((s) => h("div", { class: "set-item" },
+  return h("div", { class: "set-list" }, p.sets.map((s) => { const l = listenControls(s); return h("div", { class: "set-item" },
     h("div", { class: "set-line" },
       h("span", { class: "set-name", title: s.path }, setName(s.path)),
       p.sets.length > 1 && s.path === p.newest_set ? h("span", { class: "chip" }, "latest") : null,
       setStatus(s),
       h("span", { class: "muted" }, [s.mtime ? "saved " + agoText(s.mtime) : "", (s.version || "").replace("Ableton Live ", "Live ")].filter(Boolean).join(" · ")),
       h("span", { class: "spacer" }),
+      l.bounce, l.toggle,
       h("button", { class: "btn small", title: "Open this set in Live", onclick: (e) => { e.stopPropagation(); openInLive(s.path); } }, "Open in Live"),
       h("button", { class: "btn small", title: "Show this set in Finder", onclick: (e) => { e.stopPropagation(); reveal(s.path); } }, "Show")),
-    withDetails && (s.external || s.missing) ? h("div", { class: "set-details" }, setExamples(s)) : null)));
+    withDetails && (s.external || s.missing) ? h("div", { class: "set-details" }, setExamples(s)) : null, l.panel); }));
 }
 
 function samplesStatus(p) {

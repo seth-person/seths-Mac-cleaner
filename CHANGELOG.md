@@ -2,6 +2,13 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.8.0
+
+- **Listen to your sets from Mac Cleaner.** A set file holds no audio of its own, so Mac Cleaner plays audio you already have:
+  - **▶ next to each set** plays the newest export of that song. Exports are matched by name wherever they are: “Blackout Remix V10.wav” and “Blackout Remix (MASTER 24-bit 48k).wav” both belong to “Blackout Remix.als”. Sets without one say “no bounce yet”.
+  - **What's in it** lists every export of the song, plus every audio file the set uses (samples, recordings, stems), each with a play button.
+  - A player bar at the bottom keeps playing while you move around the app. Exports that are only in iCloud download when you play them.
+
 ## 0.7.2
 
 - **Each project now lists every set in its folder**, with its own status, when it was last saved and the Live version. Backup copies are left out.
