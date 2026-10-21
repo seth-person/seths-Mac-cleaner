@@ -143,8 +143,10 @@ def mark_used_by_sets(data: dict, con, cfg: dict | None = None) -> None:
     if con is None:
         return
     from .purge import dupe_plan
+    from . import exports
     used = safety.UsedIndex(con)
     dupes = dupe_plan(con, cfg or config.load_config(), used)
+    stems = exports.index(con)
     for ib in data["inboxes"]:
         for item in ib["items"]:
             users = used.users(item["path"])
@@ -152,6 +154,14 @@ def mark_used_by_sets(data: dict, con, cfg: dict | None = None) -> None:
                 item["used_by"] = users
                 item["suggestion"] = {"rule": "Used by Ableton", "action": "keep", "auto": False,
                                       "reason": ableton.keep_advice(users[0])}
+                continue
+            g = stems.group_for_folder(item["path"]) if item["is_dir"] else None
+            if g and g["project"]:
+                item["stems"] = {"project": g["project"], "count": len(g["files"])}
+                item["suggestion"] = {"rule": "Stems", "action": "keep", "auto": False,
+                                      "reason": f"stems for {os.path.basename(g['project'])} ({len(g['files'])} files). "
+                                                "The Plan tab shows where they'll be filed; filing stems into "
+                                                "projects comes in a later version"}
                 continue
             d = dupes.get(item["path"])
             if d and d["trashable"]:

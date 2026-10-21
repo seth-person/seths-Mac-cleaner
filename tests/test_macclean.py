@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fixture  # noqa: E402
 
-from macclean import ableton, actions, config, db, inbox, purge, survey  # noqa: E402
+from macclean import ableton, actions, config, db, inbox, purge, safety, survey  # noqa: E402
 from macclean.scanner import Scanner  # noqa: E402
 
 
@@ -28,6 +28,8 @@ class FakeHome(unittest.TestCase):
         cls._old = {k: os.environ.get(k) for k in ("HOME", "MACCLEAN_HOME")}
         os.environ["HOME"] = str(cls.home)
         os.environ.pop("MACCLEAN_HOME", None)
+        cls._running = safety.app_running
+        safety.app_running = lambda process: False  # don't depend on what's open on this machine
         fixture.build(cls.home)
         cls.cfg = config.load_config()
         Scanner(cls.cfg).run()
@@ -36,6 +38,7 @@ class FakeHome(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        safety.app_running = cls._running
         cls.con.close()
         for k, v in cls._old.items():
             if v is None:

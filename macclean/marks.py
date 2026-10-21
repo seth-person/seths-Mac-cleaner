@@ -68,5 +68,26 @@ def moved(src: str, dst: str) -> None:
                 v["name"] = os.path.basename(new)
                 data["important"][new] = v
                 changed = True
+        for flags in (data.get("flags") or {}).values():
+            for k in list(flags):
+                if k == src or k.startswith(src + os.sep):
+                    flags[dst + k[len(src):]] = flags.pop(k)
+                    changed = True
         if changed:
             _save(data)
+
+
+def set_flag(path: str, flag: str, on: bool) -> None:
+    """Per-project flags, e.g. "no_master" for sketches that don't need a final master."""
+    with _lock:
+        data = load()
+        flags = data.setdefault("flags", {}).setdefault(flag, {})
+        if on:
+            flags[path] = {"since": time.time()}
+        else:
+            flags.pop(path, None)
+        _save(data)
+
+
+def flagged(flag: str) -> set:
+    return set((load().get("flags") or {}).get(flag) or {})

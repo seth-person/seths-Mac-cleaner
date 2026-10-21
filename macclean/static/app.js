@@ -137,8 +137,21 @@ function riskPill(risk) {
     : h("span", { class: "status warning", title: "Probably not needed, but only you can tell" }, h("span", { class: "dot" }), "Check first");
 }
 
-// items: [{label, detail, group?, why?}] - grouped by `group` when given.
-function confirmItems(title, items, okLabel, warning) {
+// Time Machine's last backup, asked once per page load, for the reminder before big batches.
+let BACKUP = null;
+async function backupReminder(count, bytes) {
+  if (count < 50 && bytes < 10e9) return null;
+  try { BACKUP = BACKUP || await get("/api/backup"); } catch (e) { return null; }
+  if (!BACKUP.supported || !BACKUP.remind) return null;
+  return BACKUP.days === null
+    ? "Time Machine has no backup of this Mac. Back up before a change this big: you'll still be able to undo it here, but a backup covers anything going wrong."
+    : `Your last Time Machine backup was ${Math.floor(BACKUP.days)} days ago. Back up first?`;
+}
+
+// items: [{label, detail, group?, why?, bytes?}] - grouped by `group` when given.
+async function confirmItems(title, items, okLabel, warning) {
+  const reminder = await backupReminder(items.length, items.reduce((a, i) => a + (i.bytes || 0), 0));
+  if (reminder) warning = [].concat(warning || [], reminder);
   const byGroup = new Map();
   for (const it of items.slice(0, 300)) {
     const g = it.group || "";
@@ -160,8 +173,9 @@ function confirmItems(title, items, okLabel, warning) {
 }
 
 // items may carry `bytes` (not sent to the server's logic) so we can say how much went to the Trash.
-async function runActions(items) {
-  const res = await post("/api/apply", { items });
+async function runActions(items, label) {
+  const res = await post("/api/apply", { items, label: label || "" });
+  if (res.verify && res.verify.length) await verifyWarning(res.verify);
   const okPaths = new Set(res.results.filter((r) => r.ok).map((r) => r.path));
   const ok = okPaths.size;
   const bad = res.results.filter((r) => !r.ok);
@@ -185,6 +199,20 @@ async function runActions(items) {
     toast(`${ok} item${ok === 1 ? "" : "s"} moved. Undo from History if needed.`);
   }
   return res;
+}
+
+// After a batch moved Ableton sets: any set that now misses files it didn't miss before.
+async function verifyWarning(problems) {
+  const batch = (problems.find((p) => p.batch) || {}).batch;
+  const v = await modal("Some sets now have missing files", h("div", {},
+    h("div", { class: "warn" }, "After moving, these sets can't find files they found before. Putting the batch back fixes it."),
+    h("ul", {}, problems.map((p) => h("li", {}, h("b", {}, setName(p.set)), " ",
+      p.error ? p.error : `${p.missing_after} missing (was ${p.missing_before})`)))),
+  batch ? [{ label: "Keep as it is", value: false }, { label: "Put the batch back", value: "undo", cls: "primary" }] : undefined);
+  if (v === "undo") {
+    const r = await post("/api/undo-batch", { id: batch });
+    toast(r.ok ? `Put back ${r.undone} item${r.undone === 1 ? "" : "s"}.` : r.error);
+  }
 }
 
 function reveal(path) {
@@ -576,7 +604,7 @@ async function moveSelected(nodes) {
     h("datalist", { id: "dest-list" }, destinations.map((d) => h("option", { value: pretty(d) }))));
   const ok = await modal("Move to…", body, [{ label: "Cancel", value: false }, { label: "Move", value: true, cls: "primary" }]);
   if (!ok || !input.value.trim()) return;
-  await runActions(nodes.map((n) => ({ path: n.path, action: "move", dest: input.value.trim() })));
+  await runActions(nodes.map((n) => ({ path: n.path, action: "move", dest: input.value.trim() })), `Explore · ${nodes.length} moved`);
   route();
 }
 
@@ -589,9 +617,9 @@ async function trashSelected(nodes) {
     warnings.push("Some of these are in iCloud Drive. Trashing them removes them from your other devices too.");
   }
   const ok = await confirmItems(`Move ${nodes.length} item${nodes.length === 1 ? "" : "s"} to the Trash?`,
-    nodes.map((n) => ({ label: n.name, detail: fmt.size(n.alloc) })), "Move to Trash", warnings);
+    nodes.map((n) => ({ label: n.name, detail: fmt.size(n.alloc), bytes: n.alloc })), "Move to Trash", warnings);
   if (!ok) return;
-  await runActions(nodes.map((n) => ({ path: n.path, action: "trash", bytes: n.alloc })));
+  await runActions(nodes.map((n) => ({ path: n.path, action: "trash", bytes: n.alloc })), `Explore · ${nodes.length} trashed`);
   route();
 }
 
@@ -619,10 +647,10 @@ VIEWS.inbox = async (root) => {
     if (missing.length) return toast(`Pick a destination for ${missing[0].i.name}`);
     const risky = todo.filter(({ i }) => i.used_by);
     const ok = await confirmItems(`Apply ${todo.length} change(s)?`, todo.map(({ i, p }) => ({
-      label: i.name, detail: p.action === "trash" ? "→ Trash" : "→ " + pretty(p.dest),
+      label: i.name, detail: p.action === "trash" ? "→ Trash" : "→ " + pretty(p.dest), bytes: i.size,
     })), "Apply", risky.length ? `${risky.map((r) => r.i.name).join(", ")} contain files used by Ableton sets elsewhere; moving them will make those sets show missing files.` : null);
     if (!ok) return;
-    await runActions(todo.map(({ i, p }) => ({ path: i.path, action: p.action, dest: p.dest, bytes: i.size })));
+    await runActions(todo.map(({ i, p }) => ({ path: i.path, action: p.action, dest: p.dest, bytes: i.size })), `Catch-alls · ${todo.length} item${todo.length === 1 ? "" : "s"}`);
     route();
   };
 
@@ -708,6 +736,161 @@ VIEWS.inbox = async (root) => {
     datalist, h("div", { class: "stack" }, sections));
 };
 
+// -------------------------------------------------------------------- plan
+// Preview only in this version: proposals for any folder, which you can tick,
+// change and save, and a preview of exactly what a batch would do.
+let planFolder = "";
+const CONFIDENCE = {
+  sure: ["good", "Sure", "A Stem Prep record, or it's already in the right project"],
+  likely: ["neutral", "Likely", "The name or track names match"],
+  guess: ["neutral", "Guess", "Only a rule by type; check it"],
+};
+function confidencePill(c) {
+  if (!c) return null;
+  const [cls, label, title] = CONFIDENCE[c];
+  return h("span", { class: "status " + cls, title }, h("span", { class: "dot" }), label);
+}
+
+function librarySetup(data) {
+  const setup = data.setup || {};
+  const lay = data.layout || {};
+  const choices = setup.suggestions || [];
+  const rootIn = h("input", { type: "text", id: "lib-root", list: "lib-root-list", style: { width: "100%" },
+    value: pretty(choices[0] || data.library.root), "aria-label": "Library folder" });
+  const statusIn = h("input", { type: "text", id: "lib-statuses", style: { width: "100%" },
+    value: (lay.statuses || []).join(", "), "aria-label": "Status folders" });
+  const save = async () => {
+    const root = rootIn.value.trim().replace(/^iCloud Drive/, HOME + ICLOUD_REL).replace(/^~/, HOME);
+    const r = await post("/api/library", { root, statuses: statusIn.value.split(",").map((x) => x.trim()).filter(Boolean) });
+    if (!r.ok) return toast(r.error);
+    toast("Library set up. Nothing was moved.");
+    route();
+  };
+  return h("div", { class: "card note", style: { marginBottom: "14px" } },
+    h("h2", {}, "Set up your library"),
+    h("p", {}, "Pick the one folder your music should live in. It can move later, because everything is filed relative to it. ",
+      "Choosing it doesn't move anything; it only decides where the suggestions point."),
+    h("div", { class: "kv" },
+      h("span", { class: "muted" }, "Library folder"), h("span", {}, rootIn,
+        h("datalist", { id: "lib-root-list" }, choices.map((c) => h("option", { value: pretty(c) })))),
+      h("span", { class: "muted" }, "Status folders"), h("span", {}, statusIn,
+        h("div", { class: "muted", style: { fontSize: "12px" } }, `Projects are filed in ${lay.projects || "Projects"}/<status>. Separate names with commas.`))),
+    h("div", { class: "toolbar", style: { marginTop: "10px" } }, h("div", { class: "spacer" }),
+      h("button", { class: "btn primary", onclick: save }, "Use this library")));
+}
+
+VIEWS.plan = async (root) => {
+  const data = await get("/api/plan" + (planFolder ? "?folder=" + encodeURIComponent(planFolder) : ""));
+  if (!data.has_scan) return noScan(root);
+  const lib = data.library;
+  const head = h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Plan"),
+    h("div", { class: "ink2" }, "Pick a folder to see where everything in it would go, and why. This is a preview: nothing moves from this tab yet.")));
+  const pathIn = h("input", { type: "text", id: "plan-folder", value: planFolder ? pretty(planFolder) : "", placeholder: "Any folder in your home folder",
+    style: { minWidth: "260px", flex: "1" }, "aria-label": "Folder to plan" });
+  const open = (path) => { planFolder = path; route(); };
+  const picker = h("div", { class: "card", style: { marginBottom: "14px" } },
+    h("div", { class: "toolbar", style: { flexWrap: "wrap" } },
+      data.places.map((pl) => h("button", { class: "btn small" + (pl.path === planFolder ? " primary" : ""), onclick: () => open(pl.path) }, pl.label))),
+    h("div", { class: "toolbar", style: { marginTop: "8px" } }, pathIn,
+      h("button", { class: "btn", onclick: () => open(pathIn.value.trim().replace(/^iCloud Drive/, HOME + ICLOUD_REL).replace(/^~/, HOME)) }, "Show plan")));
+  const parts = [head, lib.ready ? null : librarySetup(data), picker];
+  if (lib.ready) {
+    parts.push(h("p", { class: "ink2" }, "Library: ", h("b", {}, pretty(lib.root)), ` · projects in ${pretty(lib.projects)}/`,
+      Object.keys(lib.statuses).join(", ")));
+  }
+  if (!planFolder) {
+    root.replaceChildren(...parts.filter(Boolean), h("div", { class: "card empty" }, h("h2", {}, "Choose a folder"),
+      h("p", {}, "Start with Downloads or Desktop, or a folder of projects or stems. Suggestions marked ",
+        h("b", {}, "Sure"), " or ", h("b", {}, "Likely"), " start ticked; guesses never do.")));
+    return;
+  }
+  if (data.error) {
+    root.replaceChildren(...parts.filter(Boolean), h("div", { class: "warn" }, data.error));
+    return;
+  }
+  if (!data.has_tracks) {
+    parts.push(h("div", { class: "note card", style: { marginBottom: "14px" } },
+      "Rescan once so Mac Cleaner reads your sets' track names. Until then, stems are only matched to projects by name."));
+  }
+
+  const decisions = new Map();
+  for (const it of data.items) {
+    const saved = data.decisions[it.path];
+    decisions.set(it.path, saved && !it.blockers.length ? { ...saved }
+      : { action: it.action, dest: it.dest || "", ticked: it.ticked });
+  }
+  const changed = () => { saveBtn.disabled = false; saveBtn.textContent = "Save my changes"; summary(); };
+
+  const byGroup = new Map();
+  for (const it of data.items) {
+    const d = decisions.get(it.path);
+    const g = it.blockers.length ? "Can't move yet" : d.action === "keep" ? "Stays here" : d.action === "trash" ? "Trash" : "→ " + pretty(d.dest);
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(it);
+  }
+  const order = (g) => (g === "Can't move yet" ? 2 : g === "Stays here" ? 3 : g === "Trash" ? 1 : 0);
+  const sections = [...byGroup].sort((a, b) => order(a[0]) - order(b[0]) || a[0].localeCompare(b[0])).map(([g, its]) => {
+    const rows = its.map((it) => {
+      const d = decisions.get(it.path);
+      const cb = h("input", { type: "checkbox", checked: d.ticked && !it.blockers.length, disabled: !!it.blockers.length || d.action === "keep",
+        "aria-label": "Include " + it.name, onchange: () => { d.ticked = cb.checked; changed(); } });
+      const dest = h("input", { type: "text", list: "plan-dests", value: d.dest ? pretty(d.dest) : "", hidden: d.action !== "move",
+        placeholder: "Destination folder", "aria-label": "Destination for " + it.name,
+        onchange: () => { d.dest = dest.value.trim(); changed(); } });
+      const act = h("select", { "aria-label": "Action for " + it.name, disabled: !!it.blockers.length, onchange: () => {
+        d.action = act.value; dest.hidden = act.value !== "move";
+        cb.disabled = act.value === "keep"; if (act.value === "keep") { cb.checked = false; d.ticked = false; }
+        changed();
+      } }, [["keep", "Keep here"], ["move", "Move to"], ["trash", "Trash"]].map(([v, l]) => h("option", { value: v, selected: v === d.action }, l)));
+      const kindLabel = it.kind === "ableton-project" ? "Ableton project" : it.kind === "folder" ? `Folder of ${(CAT_LABEL[it.category] || "other").toLowerCase()}` : CAT_LABEL[it.category] || "Other";
+      return h("tr", {},
+        h("td", { class: "check" }, cb),
+        h("td", { class: "name" }, h("span", { class: "trunc", title: it.name }, it.name + (it.is_dir ? "/" : "")),
+          h("div", { class: "muted", style: { fontSize: "11.5px" } }, kindLabel, " · ", fmt.size(it.size), " · ", fmt.age(it.age_days))),
+        h("td", { style: { width: "42%" } },
+          h("div", {}, confidencePill(it.confidence), " ", h("span", { class: "ink2" }, it.reason)),
+          it.blockers.map((b) => h("div", { class: "status critical" }, h("span", { class: "dot" }), b)),
+          it.warnings.map((w) => h("div", { class: "status warning" }, h("span", { class: "dot" }), w))),
+        h("td", { style: { width: "30%" } }, h("div", { class: "sugg" }, act, dest)),
+        h("td", {}, h("button", { class: "btn small", onclick: () => reveal(it.path) }, "Show")));
+    });
+    return h("div", { class: "card" }, h("h2", { style: { margin: "0 0 6px" } }, g, " ", h("span", { class: "ink2", style: { fontWeight: 400 } }, `${its.length}`)),
+      h("table", {}, h("tbody", {}, rows)));
+  });
+
+  const counts = h("span", { class: "ink2" });
+  const summary = () => {
+    const ticked = data.items.filter((it) => decisions.get(it.path).ticked && decisions.get(it.path).action !== "keep" && !it.blockers.length);
+    counts.textContent = `${ticked.length} ticked · ${fmt.size(ticked.reduce((a, it) => a + (it.size || 0), 0))}`;
+    previewBtn.disabled = !ticked.length;
+  };
+  const saveBtn = h("button", { class: "btn", disabled: true, onclick: async () => {
+    const r = await post("/api/plan/save", { folder: planFolder, decisions: Object.fromEntries(decisions) });
+    if (!r.ok) return toast(r.error);
+    saveBtn.disabled = true; saveBtn.textContent = "Saved";
+  } }, data.saved_at ? "Saved" : "Save my changes");
+  const previewBtn = h("button", { class: "btn primary", onclick: async () => {
+    const items = data.items.filter((it) => decisions.get(it.path).ticked && !it.blockers.length)
+      .map((it) => ({ path: it.path, ...decisions.get(it.path) })).filter((it) => it.action !== "keep");
+    const r = await post("/api/plan/preview", { items });
+    if (!r.ok) return toast(r.error);
+    const ok = r.results.filter((x) => x.ok);
+    const bad = r.results.filter((x) => !x.ok);
+    await modal(`Preview: ${ok.length} change${ok.length === 1 ? "" : "s"}`, h("div", {},
+      h("p", { class: "ink2" }, "Exactly what this batch would do. Running batches from the Plan tab comes in a later version, after you've checked these suggestions on your real folders."),
+      bad.length ? h("div", { class: "warn" }, `${bad.length} would be skipped:`, h("ul", {}, bad.map((b) => h("li", {}, `${short(b.path)}: ${b.error}`)))) : null,
+      h("div", { style: { maxHeight: "50vh", overflow: "auto" } }, h("table", {}, h("tbody", {}, ok.map((x) => h("tr", {},
+        h("td", { class: "name", style: { width: "35%" } }, h("span", { class: "trunc", title: x.src }, x.src.split("/").pop())),
+        h("td", { class: "ink2" }, h("span", { class: "trunc", title: x.dst }, x.op === "trash" ? "→ Trash" : "→ " + pretty(x.dst.slice(0, x.dst.lastIndexOf("/"))))))))))));
+  } }, "Preview batch");
+
+  root.replaceChildren(...parts.filter(Boolean),
+    h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, pretty(planFolder)), counts, h("div", { class: "spacer" }), saveBtn, previewBtn),
+    h("datalist", { id: "plan-dests" }, [...new Set(data.items.map((it) => it.dest).filter(Boolean)), ...Object.values(lib.statuses)].map((d) => h("option", { value: pretty(d) }))),
+    data.items.length ? h("div", { class: "stack" }, sections) : h("div", { class: "card empty" }, h("p", {}, "This folder is empty.")));
+  summary();
+};
+
 // ---------------------------------------------------------------- cleanup
 const CLOUD_MARK = ICLOUD_REL + "/";
 const COLLECT_ALL = "In Live, open each set, then File → Collect All and Save, and tick every source: Elsewhere, Other Projects, User Library and Factory Packs.";
@@ -731,9 +914,9 @@ VIEWS.cleanup = async (root) => {
     }
     const ok = await confirmItems(`Move ${items.length} item${items.length === 1 ? "" : "s"} (${fmt.size(items.reduce((a, f) => a + f.alloc, 0))}) to the Trash?`,
       items.map((f) => ({ group: f.group, why: f.kind === "dupe" ? null : f.why, label: f.title,
-        detail: `${fmt.size(f.alloc)} · ${pretty(f.path)}` })), "Move to Trash", warnings);
+        detail: `${fmt.size(f.alloc)} · ${pretty(f.path)}`, bytes: f.alloc })), "Move to Trash", warnings);
     if (!ok) return;
-    await runActions(items.map((f) => ({ path: f.path, action: f.action, bytes: f.alloc })));
+    await runActions(items.map((f) => ({ path: f.path, action: f.action, bytes: f.alloc })), `Cleanup · ${items.length} item${items.length === 1 ? "" : "s"}`);
     route();
   };
   const updateBar = () => {
@@ -1219,14 +1402,17 @@ VIEWS.music = async (root) => {
         })), "Move", (risky.length ? `${risky.length} of these use files outside the project folder. ${COLLECT_ALL} Otherwise they may show missing samples after moving. ` : "")
           + "Close these sets in Live before moving them.");
         if (!ok) return;
-        await runActions(todo.map((p) => ({ path: p.path, action: "move", dest: data.root + "/" + target.get(p.path) })));
+        await runActions(todo.map((p) => ({ path: p.path, action: "move", dest: data.root + "/" + target.get(p.path) })), `Projects · ${todo.length} moved`);
         route();
       } }, "Move to chosen buckets"),
     ]);
   };
 
   const tbody = h("tbody", {});
+  const passCheck = (p) => checklistFilter === "all" || (checklistFilter === "organised" && checkScore(p.checklist) === 3)
+    || (checklistFilter === "almost" && checkScore(p.checklist) === 2) || (checklistFilter === "needs" && checkScore(p.checklist) <= 1);
   for (const p of data.projects) {
+    if (!passCheck(p)) continue;
     target.set(p.path, suggestBucket(p));
     const cb = h("input", { type: "checkbox", "aria-label": "Select " + p.name, onchange: () => {
       if (cb.checked) selected.set(p.path, p); else selected.delete(p.path);
@@ -1236,7 +1422,7 @@ VIEWS.music = async (root) => {
       data.buckets.map((b) => h("option", { value: b, selected: b === target.get(p.path) }, b)));
     const where = p.in_library ? h("span", { class: "chip" }, p.bucket ? "Projects · " + p.bucket : "Projects · unsorted")
       : h("span", { class: "trunc ink2", title: p.parent }, pretty(p.parent));
-    const detail = h("tr", { class: "detail-row", hidden: true }, h("td", {}), h("td", {}), h("td", { colspan: 8 }, projectDetail(p)));
+    const detail = h("tr", { class: "detail-row", hidden: true }, h("td", {}), h("td", {}), h("td", { colspan: 9 }, projectDetail(p)));
     const nameCell = h("td", { class: "name rowlink", onclick: () => (detail.hidden = !detail.hidden) },
       h("span", { class: "trunc", style: { color: "var(--accent)" } }, p.name.replace(/ Project$/, "")),
       p.possible_copies.length ? h("span", { class: "status warning" }, h("span", { class: "dot" }), `${p.possible_copies.length} possible cop${p.possible_copies.length > 1 ? "ies" : "y"}`) : null);
@@ -1244,12 +1430,13 @@ VIEWS.music = async (root) => {
       h("td", { class: "check" }, cb), h("td", { class: "check" }, starButton(p)), nameCell,
       h("td", { style: { maxWidth: "220px" } }, where),
       h("td", {}, samplesStatus(p)),
+      h("td", {}, checklistCell(p)),
       h("td", { class: "ink2" }, (p.version || "").replace("Ableton Live ", "")),
       h("td", { class: "num" }, fmt.size(p.alloc)),
       h("td", { class: "num ink2" }, fmt.ago(p.mtime)),
       h("td", { class: "num muted" }, p.backup_bytes ? fmt.size(p.backup_bytes) : ""),
       h("td", {}, sel)),
-      p.sets.length ? h("tr", { class: "sets-row" }, h("td", {}), h("td", {}), h("td", { colspan: 8 }, setList(p))) : "", detail);
+      p.sets.length ? h("tr", { class: "sets-row" }, h("td", {}), h("td", {}), h("td", { colspan: 9 }, setList(p))) : "", detail);
   }
 
   const maxLoc = Math.max(1, ...data.locations.map((l) => l.count));
@@ -1286,16 +1473,75 @@ VIEWS.music = async (root) => {
           Archive: "— old or abandoned; candidates for an external drive",
         }[b] || ""))),
         h("p", {}, "Projects marked ", h("b", {}, "Self-contained"), " can be moved freely. Change the buckets in Rules."))),
+    data.template_problem ? h("div", { class: "warn" }, "Live's default template is missing (", pretty(data.template_problem),
+      "), so new sets start empty. In Live, open a set you like and use File → Save Live Set As Default Set.") : "",
+    data.tracks_rescan_needed ? h("div", { class: "note card", style: { marginBottom: "10px" } },
+      "Rescan once so Mac Cleaner reads each set's track names. That's how stems get matched to projects when their names differ.") : "",
+    data.exports && data.exports.unmatched_groups.length ? h("div", { class: "note card", style: { marginBottom: "10px" } },
+      `${data.exports.unmatched_groups.length} stem export${data.exports.unmatched_groups.length === 1 ? "" : "s"} didn't match a project. `,
+      "Open their folders in the ", h("a", { href: "#plan" }, "Plan"), " tab to choose where they go.") : "",
     h("div", { class: "card", style: { marginBottom: "14px" } },
-      h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, "Projects"), h("span", { class: "ink2" }, "Click a name for details. The last column is the suggested bucket.")),
+      h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, "Projects"),
+        h("div", { class: "seg" }, [["all", "All"], ["organised", `Organised (${data.projects.filter((p) => checkScore(p.checklist) === 3).length})`],
+          ["almost", "Almost"], ["needs", "Needs work"]].map(([k, l]) =>
+          h("button", { class: checklistFilter === k ? "on" : "", onclick: () => { checklistFilter = k; route(); } }, l))),
+        h("span", { class: "ink2" }, "Click a name for details. The last column is the suggested bucket.")),
       h("div", { style: { overflowX: "auto" } }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { class: "check" }), h("th", { class: "check" }), h("th", {}, "Project"), h("th", {}, "Location"),
-        h("th", {}, "Samples"), h("th", {}, "Live"), h("th", { class: "num" }, "Size"), h("th", { class: "num" }, "Last saved"),
+        h("th", {}, "Samples"), h("th", { title: "Self-contained, has a master, has stems" }, "Organised?"), h("th", {}, "Live"), h("th", { class: "num" }, "Size"), h("th", { class: "num" }, "Last saved"),
         h("th", { class: "num" }, "Backups"), h("th", {}, "Bucket"))), tbody))),
     loose || "");
 };
 
+// The organising checklist: self-contained, has a master, has stems.
+let checklistFilter = "all";
+function checkScore(c) {
+  if (!c) return 0;
+  return [c.self_contained, ["in", "not-needed"].includes(c.master), c.stems === "in" || (c.stems === "none" && c.master === "not-needed")]
+    .filter(Boolean).length;
+}
+function checklistCell(p) {
+  const c = p.checklist;
+  if (!c) return null;
+  const samples = c.self_contained ? ["good", "Samples", "Everything the sets use is inside the project"]
+    : c.status === "missing" ? ["critical", "Samples", "Some files are missing"]
+    : c.status === "external" ? ["warning", "Samples", "Uses files outside the project: Collect All and Save"]
+    : ["neutral", "Samples", "Not checked yet"];
+  const master = { in: ["good", "Master", "A master is in the project's Exports/Master"],
+    elsewhere: ["warning", "Master", "A master was found outside the project"],
+    "not-needed": ["neutral", "Master", "Marked as not needing a master"], none: ["neutral", "Master", "No master found"] }[c.master];
+  const stems = { in: ["good", "Stems", "Stems are inside the project"], elsewhere: ["warning", "Stems", "Stems were found outside the project"],
+    none: ["neutral", "Stems", "No stems found"] }[c.stems];
+  return h("span", { style: { display: "inline-flex", gap: "8px" } }, [samples, master, stems].map(([cls, label, title]) =>
+    h("span", { class: "status " + cls, title }, h("span", { class: "dot" }), label)));
+}
+function organisingDetail(p) {
+  const c = p.checklist;
+  if (!c) return null;
+  const flag = h("input", { type: "checkbox", checked: c.master === "not-needed", "aria-label": "Doesn't need a master",
+    onchange: async () => {
+      const r = await post("/api/ableton/flag", { path: p.path, flag: "no_master", on: flag.checked });
+      if (!r.ok) toast(r.error); else route();
+    } });
+  const fileLine = (path) => h("div", { class: "path" }, pretty(path), " ", h("button", { class: "btn small", onclick: () => reveal(path) }, "Show"));
+  return h("div", { class: "card note", style: { margin: "6px 0" } },
+    h("h3", { style: { margin: "0 0 6px" } }, "Getting it organised"),
+    h("div", {}, c.self_contained ? "✓ Samples: everything the sets use is inside the project."
+      : c.status === "external" ? "Samples: uses files outside the project. " + COLLECT_ALL
+      : c.status === "missing" ? "Samples: some files are missing. Open the set in Live to find them." : "Samples: not checked yet. Rescan."),
+    h("div", { style: { marginTop: "6px" } },
+      c.master === "in" ? "✓ Master: in Exports/Master." : c.master === "not-needed" ? "Master: not needed." :
+        c.master === "elsewhere" ? "Master: found outside the project (it'll be filed into Exports/Master in a later version):" : "Master: none found.",
+      " ", h("label", { class: "muted" }, flag, " Doesn't need a master")),
+    (c.master === "in" ? c.masters_in : c.masters_elsewhere).map(fileLine),
+    h("div", { style: { marginTop: "6px" } }, p.stem_groups.length ? `Stems: ${p.stem_groups.length} export${p.stem_groups.length === 1 ? "" : "s"} found` : "Stems: none found."),
+    p.stem_groups.map((g) => h("div", { class: "path" }, confidencePill(g.confidence), " ",
+      h("b", {}, g.prefix), ` · ${g.count} files · ${fmt.size(g.bytes)} · ${agoText(g.first)} · `, pretty(g.folder),
+      g.stem_prep ? h("span", { class: "chip", title: "Matched to a Stem Prep run record" }, "Stem Prep") : null,
+      h("div", { class: "muted" }, g.why), " ", h("button", { class: "btn small", onclick: () => reveal(g.folder) }, "Show"))));
+}
+
 function projectDetail(p) {
-  return h("div", { class: "stack" },
+  return h("div", { class: "stack" }, organisingDetail(p),
     h("div", { class: "kv" },
       h("span", { class: "muted" }, "Path"), h("span", {}, pretty(p.path), " ", h("button", { class: "btn small", onclick: () => reveal(p.path) }, "Show")),
       h("span", { class: "muted" }, "Files"), h("span", {}, `${fmt.count(p.files)} · ${fmt.size(p.alloc)} on this Mac (${fmt.size(p.size)} total)`),
@@ -1374,19 +1620,66 @@ VIEWS.rules = async (root) => {
 
 // ----------------------------------------------------------------- history
 VIEWS.history = async (root) => {
-  const { history } = await get("/api/history");
+  const { history, batches, interrupted } = await get("/api/history");
+  const byBatch = new Map(batches.map((b) => [b.id, b]));
+  const undoOne = async (e) => {
+    const r = await post("/api/undo", { id: e.id });
+    if (r.ok) { toast("Undone."); route(); } else toast(r.error);
+  };
+  const undoBatch = async (b) => {
+    const ok = await modal(`Undo “${b.label}”?`, h("p", {}, `Puts back the ${b.done - b.undone} change${b.done - b.undone === 1 ? "" : "s"} in this batch that aren't undone yet, newest first.`),
+      [{ label: "Cancel", value: false }, { label: "Undo all", value: true, cls: "primary" }]);
+    if (!ok) return;
+    const r = await post("/api/undo-batch", { id: b.id });
+    if (!r.ok) return toast(r.error);
+    if (r.failed.length) {
+      await modal("Some couldn't be put back", h("div", {}, h("p", {}, `${r.undone} put back. These weren't:`),
+        h("ul", {}, r.failed.map((f) => h("li", {}, `${short(f.path)}: ${f.error}`)))));
+    } else toast(`Put back ${r.undone} item${r.undone === 1 ? "" : "s"}.`);
+    route();
+  };
+  const resume = async (b) => {
+    const r = await post("/api/resume-batch", { id: b.id });
+    if (!r.ok) return toast(r.error);
+    if (r.verify && r.verify.length) await verifyWarning(r.verify);
+    const bad = r.results.filter((x) => !x.ok);
+    toast(bad.length ? `${r.results.length - bad.length} done, ${bad.length} skipped.` : `Finished: ${r.results.length} more done.`);
+    route();
+  };
+  const banners = interrupted.map((b) => h("div", { class: "warn", style: { marginBottom: "10px" } },
+    h("b", {}, `“${b.label}” stopped after ${b.done} of ${b.planned}`), " (Mac Cleaner or the Mac stopped while it ran). ",
+    h("button", { class: "btn small", onclick: () => resume(b) }, "Finish it"), " ",
+    h("button", { class: "btn small", onclick: () => undoBatch(b) }, `Put back the ${b.done - b.undone} done`)));
+  const rows = [];
+  const shown = new Set();
+  const entryRow = (e, inBatch) => h("tr", {},
+    h("td", { class: "ink2 num" }, inBatch ? "" : e.ts),
+    h("td", {}, e.op === "trash" ? "Trashed" : "Moved", e.note ? h("div", { class: "muted" }, e.note) : null),
+    h("td", { class: "name" }, h("span", { class: "trunc", title: e.src }, pretty(e.src))),
+    h("td", { class: "name" }, h("span", { class: "trunc", title: e.dst }, pretty(e.dst))),
+    h("td", {}, e.undone ? h("span", { class: "muted" }, "undone") : h("button", { class: "btn small", onclick: () => undoOne(e) }, "Undo")));
+  for (const e of history) {
+    const b = e.batch && byBatch.get(e.batch);
+    if (!b || b.done <= 1) { rows.push(entryRow(e, false)); continue; }
+    if (shown.has(b.id)) continue;
+    shown.add(b.id);
+    const members = history.filter((x) => x.batch === b.id);
+    const left = members.filter((x) => !x.undone).length;
+    const detail = members.map((x) => { const r = entryRow(x, true); r.hidden = true; return r; });
+    const toggle = h("button", { class: "btn small", onclick: () => {
+      const open = detail[0].hidden; detail.forEach((r) => (r.hidden = !open)); toggle.textContent = open ? "Hide" : `Show ${members.length}`;
+    } }, `Show ${members.length}`);
+    rows.push(h("tr", { class: "has-sets" },
+      h("td", { class: "ink2 num" }, b.ts),
+      h("td", { colspan: 3 }, h("b", {}, b.label), " ", h("span", { class: "ink2" },
+        `${members.length} change${members.length === 1 ? "" : "s"}${b.finished ? "" : ` of ${b.planned} (stopped early)`}${left < members.length ? ` · ${members.length - left} undone` : ""}`), " ", toggle),
+      h("td", {}, left ? h("button", { class: "btn small", onclick: () => undoBatch(b) }, "Undo all") : h("span", { class: "muted" }, "undone"))), ...detail);
+  }
   root.replaceChildren(
-    h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "History"), h("div", { class: "ink2" }, "Every move and trash, newest first."))),
+    h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "History"), h("div", { class: "ink2" }, "Every move and trash, newest first. Changes made together are one batch you can undo as one."))),
+    ...banners,
     history.length ? h("div", { class: "card" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "What"), h("th", {}, "From"), h("th", {}, "To"), h("th", {}))),
-      h("tbody", {}, history.map((e) => h("tr", {},
-        h("td", { class: "ink2 num" }, e.ts),
-        h("td", {}, e.op === "trash" ? "Trashed" : "Moved", e.note ? h("div", { class: "muted" }, e.note) : null),
-        h("td", { class: "name" }, h("span", { class: "trunc", title: e.src }, pretty(e.src))),
-        h("td", { class: "name" }, h("span", { class: "trunc", title: e.dst }, pretty(e.dst))),
-        h("td", {}, e.undone ? h("span", { class: "muted" }, "undone") : h("button", { class: "btn small", onclick: async () => {
-          const r = await post("/api/undo", { id: e.id });
-          if (r.ok) { toast("Undone."); route(); } else toast(r.error);
-        } }, "Undo")))))))
+      h("tbody", {}, rows)))
       : h("div", { class: "card empty" }, h("h2", {}, "Nothing yet"),
         h("p", {}, "Anything you move or trash shows up here, and can be undone until you empty the Trash.")));
 };

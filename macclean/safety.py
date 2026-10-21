@@ -9,10 +9,16 @@
   is ever suggested for the Trash
 - preflight(): re-checks an item at the moment you click, because the scan
   may be out of date
+- premove_problem(): checked right before every move or trash: the app that
+  owns it isn't open, it stays on the same disk, and nothing only in iCloud
+  leaves iCloud
 """
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import time
 import unicodedata
 
 from . import config
@@ -121,6 +127,10 @@ def protected_reason(path: str, cfg: dict) -> str | None:
     tops.update(os.path.realpath(p) for p in config.inbox_paths(cfg))
     tops.add(os.path.realpath(config.expand(cfg["cloud_root"], cfg)))
     tops.add(os.path.realpath(config.expand(cfg["ableton_root"], cfg)))
+    if cfg.get("library_ready"):
+        lib_paths = config.library_paths(cfg)
+        tops.update(os.path.realpath(lib_paths[k]) for k in ("root", "projects", "releases", "work", "samples"))
+        tops.update(os.path.realpath(p) for p in lib_paths["statuses"].values())
     if real in tops:
         return "is a main folder"
     if parent == lib:
@@ -177,4 +187,110 @@ def preflight(index: UsedIndex, path: str, action: str, scanned: dict | None = N
             return None
         if abs(st.st_mtime - scanned["mtime"]) > 2 or st.st_size != scanned["size"]:
             return "it changed since the last scan; rescan first"
+    return None
+
+
+# --- right before a move or trash ----------------------------------------------
+SF_DATALESS = 0x40000000  # macOS: the file's contents live only in iCloud
+CLOUD_CHECK_LIMIT = 50000  # entries walked when checking a folder for iCloud-only files
+
+# Apps that keep track of where their files are, by process name.
+APPS = {"Live": "Ableton Live", "Final Cut Pro": "Final Cut Pro", "rekordbox": "rekordbox"}
+_running_cache = {}
+
+
+def app_running(process: str) -> bool:
+    """Whether a macOS app is open right now (checked at most every few seconds)."""
+    if sys.platform != "darwin":
+        return False
+    hit = _running_cache.get(process)
+    if hit and time.time() - hit[1] < 5:
+        return hit[0]
+    try:
+        running = subprocess.run(["pgrep", "-xq", process], timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        running = False
+    _running_cache[process] = (running, time.time())
+    return running
+
+
+def _in_project(path: str) -> bool:
+    """The item is an Ableton project, a set, or something inside a project."""
+    if path.lower().endswith(".als"):
+        return True
+    h = os.path.realpath(config.home())
+    p = os.path.realpath(path) if not os.path.islink(path) else os.path.dirname(os.path.abspath(path))
+    while p.startswith(h + os.sep):
+        if os.path.isdir(os.path.join(p, "Ableton Project Info")):
+            return True
+        p = os.path.dirname(p)
+    return False
+
+
+def _contains_sets(path: str, limit: int = 2000) -> bool:
+    """A folder that holds Ableton projects or sets (e.g. an EP's folder)."""
+    if not os.path.isdir(path) or os.path.islink(path):
+        return False
+    n = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        if "Ableton Project Info" in dirnames or any(f.lower().endswith(".als") for f in filenames):
+            return True
+        n += len(dirnames) + len(filenames)
+        if n > limit:
+            return False
+    return False
+
+
+def cloud_only(path: str) -> bool:
+    """True when the item (or anything in a folder) is only in iCloud, not on this Mac.
+    A folder too big to check counts as having some, to be safe."""
+    def dataless(p: str, name: str) -> bool:
+        if name.startswith(".") and name.endswith(".icloud"):
+            return True
+        try:
+            return bool(getattr(os.lstat(p), "st_flags", 0) & SF_DATALESS)
+        except OSError:
+            return False
+    if not os.path.isdir(path) or os.path.islink(path):
+        return dataless(path, os.path.basename(path))
+    n = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        for name in filenames + dirnames:
+            n += 1
+            if n > CLOUD_CHECK_LIMIT or dataless(os.path.join(dirpath, name), name):
+                return True
+    return False
+
+
+def _existing_ancestor(path: str) -> str:
+    p = os.path.abspath(path)
+    while not os.path.exists(p) and os.path.dirname(p) != p:
+        p = os.path.dirname(p)
+    return p
+
+
+def same_disk(src: str, dest_dir: str) -> bool:
+    try:
+        return os.lstat(src).st_dev == os.stat(_existing_ancestor(dest_dir)).st_dev
+    except OSError:
+        return False
+
+
+def premove_problem(src: str, dest_dir: str, cfg: dict) -> str | None:
+    """Why this move (or trash, with dest_dir = the Trash) can't happen right now, or None."""
+    name = os.path.basename(src)
+    if (_in_project(src) or _contains_sets(src)) and app_running("Live"):
+        return f"Ableton Live is open. Close Live first, so it doesn't lose track of {name}"
+    if src.lower().endswith(".fcpbundle") and app_running("Final Cut Pro"):
+        return "Final Cut Pro is open. Close it before moving its library"
+    if any(part.casefold() == "rekordbox" for part in os.path.abspath(src).split(os.sep)) and app_running("rekordbox"):
+        return "rekordbox is open. Close it first"
+    if not same_disk(src, dest_dir):
+        return f"{name} would move to a different disk. Mac Cleaner only moves things within the same disk for now"
+    cloud = os.path.realpath(config.expand(cfg["cloud_root"], cfg))
+    leaving_cloud = (os.path.realpath(os.path.dirname(os.path.abspath(src))) + os.sep).startswith(cloud + os.sep) \
+        and not (os.path.realpath(_existing_ancestor(dest_dir)) + os.sep).startswith(cloud + os.sep)
+    if leaving_cloud and cloud_only(src):
+        return (f"{name} has files that are only in iCloud. In Finder, right-click it and choose "
+                "Download Now, wait for it to finish, then try again")
     return None

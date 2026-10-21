@@ -57,9 +57,14 @@ COLLECT_ALL_STEPS = ("In Live, open the set, then File → Collect All and Save.
                      "Elsewhere, Other Projects, User Library and Factory Packs, then Save.")
 
 
+_TOP_TRACKS = {"AudioTrack": "audio", "MidiTrack": "midi", "GroupTrack": "group", "ReturnTrack": "return"}
+
+
 def parse_set(path: str) -> dict:
-    """Return {'version': str, 'refs': [{'path','rel','pack','pack_id'}]} for a set or preset."""
+    """Return {'version': str, 'refs': [{'path','rel','pack','pack_id'}], 'tracks': [(name, kind)]}
+    for a set or preset. Tracks are the set's own tracks (not tracks inside racks)."""
     refs = []
+    tracks = []
     version = ""
     stack = []
     labels = []  # names of the tracks, chains and clips we're inside, parallel to stack
@@ -88,6 +93,8 @@ def parse_set(path: str) -> dict:
         if value and tag == "EffectiveName" and len(stack) > 2 and stack[-2] == "Name" \
                 and (stack[-3] in _TRACK_TAGS or stack[-3] in _BRANCH_NAMES):
             labels[-3] = value
+            if len(stack) > 3 and stack[-4] == "Tracks" and stack[-3] in _TOP_TRACKS:
+                tracks.append((value, _TOP_TRACKS[stack[-3]]))
         elif value and tag == "Name" and len(stack) > 1 and stack[-2] == "AudioClip":
             labels[-2] = value
         if tag == "FileRef" and cur is None and not _IGNORED_CONTEXTS.intersection(stack):
@@ -137,12 +144,13 @@ def parse_set(path: str) -> dict:
         parser.StartElementHandler = start
         parser.EndElementHandler = end
         refs.clear()
+        tracks.clear()
         stack.clear()
         labels.clear()
         cur = None
         with open(path, "rb") as f:
             parser.ParseFile(f)
-    return {"version": version, "refs": refs}
+    return {"version": version, "refs": refs, "tracks": tracks}
 
 
 def is_preset(path: str) -> bool:
@@ -230,7 +238,7 @@ def check_set(path: str, project_dir: str | None, packs: list | None = None) -> 
                 examples["missing"].append(shown)
                 examples["missing_detail"].append({k: ref[k] for k in ("path", "rel", "rel_type", "pack", "where", "xml")})
     return {"version": parsed["version"], "refs": len(seen), **counts, "examples": examples,
-            "external_paths": external, "used_paths": used, "pack_refs": pack_refs}
+            "external_paths": external, "used_paths": used, "pack_refs": pack_refs, "tracks": parsed["tracks"]}
 
 
 def _project_for(path: str, projects: set) -> str | None:
@@ -260,7 +268,7 @@ def analyse_sets(con, cfg, cancel=None, state=None) -> None:
     from . import live_prefs
     packs = live_prefs.installed_packs()
     projects = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")}
-    set_rows, preset_rows, ref_rows, pack_rows = [], [], [], []
+    set_rows, preset_rows, ref_rows, pack_rows, track_rows = [], [], [], [], []
     exts = (SET_EXT,) + PRESET_EXTS
     query = "SELECT path, ext, dataless FROM files WHERE ext IN (%s)" % ",".join("?" * len(exts))
     for r in con.execute(query, exts).fetchall():
@@ -283,6 +291,8 @@ def analyse_sets(con, cfg, cancel=None, state=None) -> None:
                          res["external"], res["missing"], json.dumps(res["examples"]), None))
             ref_rows.extend((path, os.path.normpath(e)) for e in res["used_paths"])
             pack_rows.extend((path, name, int(found)) for name, found in res["pack_refs"].items())
+            if not is_preset:
+                track_rows.extend((path, i, name, kind) for i, (name, kind) in enumerate(res["tracks"]))
         except Exception as e:  # corrupt/unreadable files shouldn't stop the scan
             rows.append((path, project, "", 0, 0, 0, 0, 0, "{}", f"Couldn't read: {e}"))
         if state is not None:
@@ -291,6 +301,7 @@ def analyse_sets(con, cfg, cancel=None, state=None) -> None:
     con.executemany("INSERT OR REPLACE INTO ableton_presets VALUES (?,?,?,?,?,?,?,?,?,?)", preset_rows)
     con.executemany("INSERT INTO ableton_refs VALUES (?,?)", ref_rows)
     con.executemany("INSERT INTO ableton_pack_refs VALUES (?,?,?)", pack_rows)
+    con.executemany("INSERT INTO ableton_tracks VALUES (?,?,?,?)", track_rows)
     con.commit()
 
 
@@ -460,6 +471,7 @@ def recheck_project(con, project: str) -> dict:
                                           "UNION ALL SELECT path FROM ableton_presets WHERE project=?",
                                           (project, project))]
     for p in old:
+        con.execute("DELETE FROM ableton_tracks WHERE set_path=?", (p,))
         con.execute("DELETE FROM ableton_refs WHERE set_path=?", (p,))
         con.execute("DELETE FROM ableton_pack_refs WHERE user_path=?", (p,))
     con.execute("DELETE FROM ableton_sets WHERE project=?", (project,))
@@ -488,6 +500,8 @@ def recheck_project(con, project: str) -> dict:
             con.executemany("INSERT INTO ableton_pack_refs VALUES (?,?,?)",
                             [(path, n, int(f)) for n, f in res["pack_refs"].items()])
             if ext == SET_EXT:
+                con.executemany("INSERT INTO ableton_tracks VALUES (?,?,?,?)",
+                                [(path, i, n, k) for i, (n, k) in enumerate(res["tracks"])])
                 results.append({"path": path, "external": res["external"], "missing": res["missing"]})
     con.commit()
     sets = [r for r in results if "error" not in r]
@@ -518,3 +532,60 @@ def _status(sets: list) -> str:
     if any(s["error"] for s in sets):
         return "unknown"
     return "ok"
+
+
+VERIFY_SET_LIMIT = 300
+
+
+def _sets_under(path: str) -> list:
+    if path.lower().endswith(SET_EXT) and os.path.isfile(path):
+        return [path]
+    out = []
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if d != "Backup" and not d.startswith(".")]
+        out.extend(os.path.join(dirpath, f) for f in filenames
+                   if f.lower().endswith(SET_EXT) and not f.startswith("._"))
+        if len(out) > VERIFY_SET_LIMIT:
+            break
+    return out
+
+
+def _project_dir_of(path: str) -> str | None:
+    p = os.path.dirname(path)
+    while p and p != os.path.dirname(p):
+        if os.path.isdir(os.path.join(p, "Ableton Project Info")):
+            return p
+        p = os.path.dirname(p)
+    return None
+
+
+def verify_moves(con, results: list) -> list:
+    """After a batch: re-read every set that moved, at its new place, and compare
+    its missing files with what the last scan saw. Returns the sets that got worse."""
+    from . import live_prefs
+    packs = None
+    problems = []
+    for r in results:
+        if not r.get("ok") or r.get("op") != "move" or r.get("dry_run"):
+            continue
+        src, dst = r["src"], r["dst"]
+        sets = _sets_under(dst)
+        if not sets:
+            continue
+        if packs is None:
+            packs = live_prefs.installed_packs()
+        for s in sets:
+            old_path = src + s[len(dst):]
+            before = None
+            if con is not None:
+                row = con.execute("SELECT missing FROM ableton_sets WHERE path=?", (old_path,)).fetchone()
+                before = row["missing"] if row else None
+            try:
+                after = check_set(s, _project_dir_of(s), packs)["missing"]
+            except Exception as e:  # unreadable: say so rather than guess
+                problems.append({"set": s, "moved": dst, "batch": r.get("batch"), "error": f"Couldn't read it: {e}"})
+                continue
+            if after > (before or 0):
+                problems.append({"set": s, "moved": dst, "batch": r.get("batch"),
+                                 "missing_before": before or 0, "missing_after": after})
+    return problems

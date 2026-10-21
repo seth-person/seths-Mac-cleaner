@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS ableton_presets (
 CREATE TABLE IF NOT EXISTS ableton_refs (set_path TEXT, ref_path TEXT);
 CREATE TABLE IF NOT EXISTS ableton_pack_refs (user_path TEXT, pack TEXT, found INTEGER);
 CREATE INDEX IF NOT EXISTS ableton_refs_ref ON ableton_refs(ref_path);
+CREATE TABLE IF NOT EXISTS ableton_tracks (set_path TEXT, position INTEGER, name TEXT, kind TEXT);
+CREATE INDEX IF NOT EXISTS ableton_tracks_set ON ableton_tracks(set_path);
 """
 
 

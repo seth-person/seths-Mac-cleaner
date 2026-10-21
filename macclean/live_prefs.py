@@ -176,3 +176,18 @@ def recent_sets() -> list:
             seen.add(p)
             out.append(p)
     return out
+
+
+def pinned_folders(info: dict | None = None) -> list:
+    """Folders pinned in the Places section of Live's browser."""
+    info = read_library() if info is None else info
+    return [p["path"] for p in (info or {}).get("places") or [] if p.get("path")]
+
+
+def template_problem(info: dict | None = None) -> str | None:
+    """Live's default template points at a file that isn't there (new sets then start empty)."""
+    info = read_library() if info is None else info
+    t = (info or {}).get("default_template")
+    if t and not os.path.exists(t):
+        return t
+    return None

@@ -2,6 +2,30 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.9.0
+
+The first step towards organising your whole Mac. Nothing in this version moves anything new: it adds safety around every move and shows what organising would do, so you can check it on your real folders first.
+
+- **New Plan tab.** Pick any folder (Downloads, Desktop, a projects folder, a folder of stems…) and see where each thing in it would go, and why:
+  - Projects go into status folders, guessed from where they are now (“Completed Projects” → Finished).
+  - A song's masters, bounces and stems go into its project's `Exports` folder.
+  - Each suggestion says how sure it is: **Sure**, **Likely** or **Guess**. Guesses never start ticked.
+  - Anything that would break is shown in red and can't be ticked: a project that needs Collect All, or a file a set elsewhere uses.
+  - Your changes are saved, so you can work through a long list over several days. **Preview batch** shows exactly what would move. Running it comes in a later version.
+- **Set up your library** (in the Plan tab): the one folder your music lives in, and your status folders. Choosing it moves nothing.
+- **Every project now has a checklist** in Ableton → All projects: self-contained, has a master, has stems, with where Mac Cleaner found the ones that aren't in the project yet. Filter by Organised, Almost or Needs work. A sketch can be marked “Doesn't need a master”.
+- **Stems are recognised**: files Live exported together (“Song Drums.wav”, “Song Bass.wav”…), and runs from the Stem Prep extension for Live. They're matched to their project by name or by track names. **Rescan once** so Mac Cleaner reads your sets' track names.
+- **Safer moves everywhere** (Catch-alls, Cleanup, Explore, Ableton):
+  - Changes made together are one batch with **Undo all** in History.
+  - If the app or the Mac stops in the middle, the next launch says how far it got. You can finish it or put it back.
+  - Projects and sets wait until Live is closed. Final Cut libraries wait for Final Cut, rekordbox's folder for rekordbox.
+  - Files that are only in iCloud are never moved out of iCloud until they're downloaded.
+  - Nothing moves to a different disk.
+  - After moving projects, their sets are checked again. If one now misses files, you can put the batch back straight away.
+  - Before a big batch, you're reminded if Time Machine hasn't backed up in the last week.
+- **Catch-alls** no longer suggests sending a folder of stems to Samples when it belongs to a project. School and money documents (course codes, taxes, 1099s, receipts) get their own suggestions.
+- The Ableton tab says when Live's default template file is missing.
+
 ## 0.8.0
 
 - **Listen to your sets from Mac Cleaner.** A set file holds no audio of its own, so Mac Cleaner plays audio you already have:

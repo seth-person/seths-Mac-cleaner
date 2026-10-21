@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, ableton, actions, config, db, inbox, listen, marks, purge, safety, survey, updater
+from . import __version__, ableton, actions, backup, config, db, exports, inbox, listen, live_prefs, marks, plan, purge, safety, survey, updater
 from .scanner import BackgroundScan
 
 STATIC = Path(__file__).parent / "static"
@@ -181,7 +181,62 @@ def api_ableton(q):
     con = _con()
     if not con:
         return {"has_scan": False}
-    return {"has_scan": True, **ableton.overview(con, config.load_config())}
+    cfg = config.load_config()
+    data = ableton.overview(con, cfg)
+    data["exports"] = exports.attach_checklist(con, cfg, data["projects"])
+    data["tracks_rescan_needed"] = int(db.meta(con).get("index_version", 0) or 0) < 3
+    data["live_pins"] = live_prefs.pinned_folders()
+    data["template_problem"] = live_prefs.template_problem()
+    return {"has_scan": True, **data}
+
+
+def post_ableton_flag(body):
+    if not isinstance(body.get("path"), str) or not os.path.isabs(body["path"]) or body.get("flag") not in ("no_master",):
+        return {"ok": False, "error": "Pick a project"}
+    marks.set_flag(body["path"], body["flag"], bool(body.get("on")))
+    return {"ok": True}
+
+
+def api_plan(q):
+    cfg = config.load_config()
+    con = _con()
+    folder = (q.get("folder") or [""])[0]
+    out = {"places": plan.places(con, cfg), "library": config.library_paths(cfg), "has_scan": con is not None,
+           "setup": api_library(q), "layout": {**config.DEFAULT_CONFIG["layout"], **(cfg.get("layout") or {})}}
+    if folder:
+        out.update(plan.plan_folder(con, cfg, folder))
+    return out
+
+
+def post_plan_save(body):
+    try:
+        return {"ok": True, **plan.save_decisions(body["folder"], body.get("decisions") or {})}
+    except (KeyError, ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+def post_plan_preview(body):
+    items = body.get("items")
+    if not isinstance(items, list):
+        return {"ok": False, "error": "Nothing to preview"}
+    return {"ok": True, "results": plan.preview(items, config.load_config())}
+
+
+def api_library(q):
+    cfg = config.load_config()
+    cloud = config.expand("{cloud}", cfg)
+    suggestions = [str(p) for p in (cloud / "Active Storage", cloud / "Music Library", cloud) if p.is_dir()]
+    return {"library": config.library_paths(cfg), "suggestions": suggestions,
+            "statuses": config.library_paths(cfg)["statuses"]}
+
+
+def post_library(body):
+    try:
+        cfg = config.set_up_library(config.load_config(), str(body.get("root") or ""), body.get("statuses"))
+        config.save_config(cfg)
+        return {"ok": True, "library": config.library_paths(cfg)}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
 
 
 def api_config(q):
@@ -193,7 +248,28 @@ def api_config(q):
 
 
 def api_history(q):
-    return {"history": actions.history()}
+    return {"history": actions.history(), "batches": actions.batches(),
+            "interrupted": actions.interrupted_batches()}
+
+
+def api_backup(q):
+    return backup.status()
+
+
+def post_undo_batch(body):
+    try:
+        return {"ok": True, **actions.undo_batch(body["id"])}
+    except (actions.ActionError, KeyError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+def post_resume_batch(body):
+    try:
+        results = actions.resume_batch(body["id"])
+    except (actions.ActionError, KeyError) as e:
+        return {"ok": False, "error": str(e)}
+    con = _con()
+    return {"ok": True, "results": results, "verify": ableton.verify_moves(con, results)}
 
 
 def api_survey(q):
@@ -295,8 +371,9 @@ def post_apply(body):
             results.extend(purge.trash_asd(it["path"], cfg))
         else:
             plain.append(it)
-    results.extend(actions.apply(plain, cfg, dry_run=bool(body.get("dry_run"))))
-    return {"results": results}
+    moved = actions.apply(plain, cfg, dry_run=bool(body.get("dry_run")), label=str(body.get("label") or ""))
+    results.extend(moved)
+    return {"results": results, "verify": ableton.verify_moves(con, moved)}
 
 
 def post_open_trash(body):
@@ -334,11 +411,12 @@ def post_reveal(body):
 GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": api_tree,
        "/api/inbox": api_inbox, "/api/destinations": api_destinations, "/api/purge": api_purge, "/api/ableton": api_ableton, "/api/ableton/set": api_ableton_set, "/api/packs": api_packs,
        "/api/config": api_config, "/api/history": api_history, "/api/survey": api_survey,
-       "/api/update": api_update}
+       "/api/update": api_update, "/api/backup": api_backup, "/api/plan": api_plan, "/api/library": api_library}
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
-        "/api/undo": post_undo, "/api/config": post_config, "/api/reveal": post_reveal, "/api/open-trash": post_open_trash,
+        "/api/undo": post_undo, "/api/undo-batch": post_undo_batch, "/api/resume-batch": post_resume_batch, "/api/config": post_config, "/api/reveal": post_reveal, "/api/open-trash": post_open_trash,
         "/api/ableton/mark": post_ableton_mark, "/api/ableton/recheck": post_ableton_recheck,
-        "/api/ableton/open": post_ableton_open,
+        "/api/ableton/open": post_ableton_open, "/api/ableton/flag": post_ableton_flag,
+        "/api/plan/save": post_plan_save, "/api/plan/preview": post_plan_preview, "/api/library": post_library,
         "/api/update/install": post_update_install, "/api/update/rollback": post_update_rollback,
         "/api/update/token": post_update_token, "/api/update/migrate": post_update_migrate, "/api/quit": post_quit}
 
@@ -483,6 +561,10 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         raise
     url = f"http://127.0.0.1:{HTTPD.server_address[1]}/"
     print(f"Mac Cleaner {__version__} running at {url}  (Ctrl+C to stop)", flush=True)
+    try:
+        actions.recover()  # log anything a previous run moved but didn't get to log
+    except OSError:
+        pass
     if os.environ.get("MACCLEAN_APP_BUNDLE"):
         _exit_with_parent()
         threading.Thread(target=updater.reset_permissions_if_new_identity, daemon=True).start()

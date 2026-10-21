@@ -44,14 +44,19 @@ PLUGIN_VENDORS = (r"(fabfilter|native.?instruments|native.?access|komplete|konta
                   r"ableton|toontrack|spectrasonics|omnisphere|eventide|sonnox|melda|kilohearts|cableguys|"
                   r"\b(vst3?|au|aax)\b)")
 
+SCHOOL_WORDS = (r"(\b[A-Z]{2,4} ?\d{3}[A-Z]?\b|syllabus|homework|assignment|lecture|midterm|"
+                r"\bfinal exam\b|\bquiz\b|textbook|\bcourse\b|\bschool\b)")
+MONEY_WORDS = (r"(\btax(es)?\b|\b1099s?\b|\bw-?2\b|invoice|receipt|pay ?stub|payslip|\bstatement\b|"
+               r"gusto|\brefund\b)")
+
 # Rules are checked top to bottom against each item in an inbox; the first match
 # produces the suggestion. "dest" templates may use {cloud} {ableton} {home}
-# {year} {month} {category}. Rules with "auto": true are applied by `autosort`.
+# {year} {month} {category} {library}. Rules with "auto": true are applied by `autosort`.
 # "enabled": false switches a rule off. Trash rules only ever match single
 # files (never folders), and their "risk" ("safe"/"review") is shown next to
 # the suggestion.
 # Bump when the default rules change, so saved settings pick up the new ones.
-RULES_VERSION = 3
+RULES_VERSION = 4  # 4: School and Money documents
 
 DEFAULT_CONFIG = {
     "rules_version": RULES_VERSION,
@@ -62,6 +67,23 @@ DEFAULT_CONFIG = {
     "ableton_root": "{cloud}/Ableton Projects",
     # Sub-folders of ableton_root used as status buckets for projects.
     "ableton_buckets": ["Active", "Ideas", "Finished", "Archive"],
+    # The music library: one folder everything music-related is filed under, so
+    # it can move as a whole later. Unset until you set it up in the Plan tab.
+    "library_root": "{cloud}",
+    "library_ready": False,
+    # Folder names inside the library (and two document homes).
+    "layout": {
+        "projects": "Projects",
+        "statuses": ["Active", "Dormant", "Finished", "Archive"],
+        "releases": "Releases",
+        "work": "Work",
+        "samples": "Samples",
+        "source_tracks": "Samples/Source Tracks",
+        "brand": "Brand",
+        "exports": "Exports",
+        "school": "{cloud}/Documents/School",
+        "money": "{cloud}/Documents/Money",
+    },
     "stale_days": 21,
     "scan_roots": ["~"],
     "exclude": [
@@ -109,6 +131,12 @@ DEFAULT_CONFIG = {
          "action": "move", "dest": "{cloud}/Pictures/{year}"},
         {"name": "Video", "when": {"category": ["video"]},
          "action": "move", "dest": "{cloud}/Videos/{year}"},
+        {"name": "School", "when": {"name_regex": SCHOOL_WORDS},
+         "describe": "school work: course codes like ENG101, syllabus, homework, lecture slides",
+         "action": "move", "dest": "{cloud}/Documents/School"},
+        {"name": "Money", "when": {"name_regex": MONEY_WORDS},
+         "describe": "taxes, 1099s, W-2s, invoices, receipts, pay stubs and statements",
+         "action": "move", "dest": "{cloud}/Documents/Money"},
         {"name": "Documents", "when": {"category": ["document"]},
          "action": "move", "dest": "{cloud}/Documents/{year}"},
         {"name": "Code", "when": {"category": ["code"]},
@@ -181,12 +209,70 @@ def validate_config(cfg: dict) -> None:
             raise ValueError(f"rule {i + 1}: 'when' must be an object")
 
 
+def _fill(template: str, values: dict) -> str:
+    for _ in range(3):
+        for k, v in values.items():
+            template = template.replace("{" + k + "}", str(v))
+    return template
+
+
+def library_paths(cfg: dict) -> dict:
+    """The library's folders as real paths: root, projects, status folders, samples..."""
+    lay = {**DEFAULT_CONFIG["layout"], **(cfg.get("layout") or {})}
+    root = expand("{library}", cfg)
+    out = {"root": str(root), "ready": bool(cfg.get("library_ready"))}
+    for k in ("projects", "releases", "work", "samples", "source_tracks", "brand"):
+        out[k] = str(root / lay[k])
+    if out["ready"]:
+        out["statuses"] = {s: str(root / lay["projects"] / s) for s in lay["statuses"]}
+    else:  # until it's set up, projects go where the Ableton tab already files them
+        proj = expand(cfg["ableton_root"], cfg)
+        out["projects"] = str(proj)
+        out["statuses"] = {s: str(proj / s) for s in cfg.get("ableton_buckets") or lay["statuses"]}
+    out["exports"] = lay["exports"]
+    out["school"] = str(expand(lay["school"], cfg))
+    out["money"] = str(expand(lay["money"], cfg))
+    return out
+
+
+def set_up_library(cfg: dict, root: str, statuses: list | None = None) -> dict:
+    """Point the library at an existing folder in your home folder and use its
+    Projects/<status> folders for the Ableton tab too."""
+    path = Path(os.path.expanduser(root)).resolve()
+    if not path.is_dir():
+        raise ValueError(f"{root} isn't a folder")
+    if not (str(path) + os.sep).startswith(str(home().resolve()) + os.sep):
+        raise ValueError("The library has to be inside your home folder")
+    statuses = [s.strip() for s in (statuses or []) if s and s.strip()]
+    if any("/" in s or s.startswith(".") for s in statuses):
+        raise ValueError("Status folder names can't contain / or start with a dot")
+    cfg = copy.deepcopy(cfg)
+    cloud = os.path.realpath(expand("{cloud}", cfg))
+    shown = os.path.realpath(path)
+    cfg["library_root"] = "{cloud}" + shown[len(cloud):] if (shown + os.sep).startswith(cloud + os.sep) or shown == cloud \
+        else str(path)
+    cfg["layout"] = {**DEFAULT_CONFIG["layout"], **(cfg.get("layout") or {})}
+    if statuses:
+        cfg["layout"]["statuses"] = statuses
+    cfg["ableton_root"] = "{library}/" + cfg["layout"]["projects"]
+    cfg["ableton_buckets"] = list(cfg["layout"]["statuses"])
+    # Rules that filed into a status folder you don't have now use the first one.
+    first = cfg["ableton_buckets"][0]
+    for r in cfg.get("rules", []):
+        dest = r.get("dest") or ""
+        if dest.startswith("{ableton}/") and dest[len("{ableton}/"):].split("/")[0] not in cfg["ableton_buckets"]:
+            r["dest"] = "{ableton}/" + first + dest[len("{ableton}/"):][len(dest[len("{ableton}/"):].split("/")[0]):]
+    cfg["library_ready"] = True
+    return cfg
+
+
 def expand(path: str, cfg: dict | None = None, **extra) -> Path:
     """Expand ~ and {cloud}/{ableton}/{home}/... placeholders into a Path."""
     cfg = cfg or load_config()
     cloud = os.path.expanduser(cfg["cloud_root"].replace("{home}", str(home())))
     values = {"home": str(home()), "cloud": cloud}
-    values["ableton"] = cfg["ableton_root"].format(**values)
+    values["library"] = _fill(cfg.get("library_root") or "{cloud}", values)
+    values["ableton"] = _fill(cfg["ableton_root"], values)
     values.update(extra)
     out = path
     if out.startswith("iCloud Drive"):  # the dashboard shows {cloud} this way

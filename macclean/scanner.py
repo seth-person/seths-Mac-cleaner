@@ -32,7 +32,7 @@ _PACKAGE_CATEGORY = {
 _SYSTEM_ROOTS = {"/System", "/usr", "/bin", "/sbin", "/private", "/Library", "/opt", "/cores"}
 # Sets, presets/racks (checked for what they load) and .asd files are always recorded.
 _ALWAYS_STORE_EXT = {".als", ".asd", ".adg", ".adv", ".alc", ".agr"}
-INDEX_VERSION = 2  # 2: presets and racks are part of the "used by" index
+INDEX_VERSION = 3  # 2: presets and racks are part of the "used by" index; 3: track names
 
 
 class ScanCancelled(Exception):
