@@ -2,6 +2,11 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.9.1
+
+- **Fixed: updating could put you back on an older version.** Mac Cleaner keeps a backup copy of the version before, so you can roll back. If that backup was opened instead of the app (for example from Spotlight) and you clicked Update, the old version ended up back in place. The backup copy now refuses to update and tells you to open Mac Cleaner from your Applications folder.
+- The backup copy no longer shows up in Spotlight or Launchpad, so it can't be opened by mistake.
+
 ## 0.9.0
 
 The first step towards organising your whole Mac. Nothing in this version moves anything new: it adds safety around every move and shows what organising would do, so you can check it on your real folders first.

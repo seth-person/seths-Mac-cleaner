@@ -352,6 +352,10 @@ def _app_previous_version() -> str | None:
 def _app_blocked(bundle: Path) -> str | None:
     """Why the running app can't replace itself, if it can't."""
     s = str(bundle)
+    root = os.path.realpath(install_root())
+    if (os.path.realpath(s) + os.sep).startswith(root + os.sep):
+        return ("This is the backup copy Mac Cleaner keeps so you can roll back, not the app itself. "
+                "Quit it, open Mac Cleaner from your Applications folder, and update from there.")
     if "/AppTranslocation/" in s or s.startswith("/Volumes/"):
         return ("Mac Cleaner is running straight from the download. Drag it into your Applications "
                 "folder, open it from there, then update.")
@@ -467,7 +471,10 @@ for _ in $(seq 1 300); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
 mkdir -p "$(dirname "$previous")"
 hold="$previous.swap"
 rm -rf "$hold"
-if ! err="$(mv "$current" "$hold" 2>&1)"; then
+if [ "$current" = "$previous" ]; then
+  # Running the backup itself: swapping would put the old version back over the new one.
+  echo "failed: this is the backup copy, not the app in Applications" > "$result"
+elif ! err="$(mv "$current" "$hold" 2>&1)"; then
   echo "failed: $err" > "$result"
 elif ! err="$(mv "$new" "$current" 2>&1)"; then
   mv "$hold" "$current"
@@ -475,10 +482,16 @@ elif ! err="$(mv "$new" "$current" 2>&1)"; then
 else
   rm -rf "$previous"
   mv "$hold" "$previous"
+  # Keep the backup out of Spotlight and Launchpad, so it isn't opened instead of the app.
+  ls=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  [ -x "$ls" ] && "$ls" -u "$previous" >/dev/null 2>&1
   echo "ok" > "$result"
 fi
-open "$current"
+[ -n "$MACCLEAN_NO_REOPEN" ] || open "$current"  # tests set this: nothing real to reopen
 """
+
+
+LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 
 def _result_file() -> Path:
@@ -591,7 +604,10 @@ def migrate_to_app() -> dict:
             shutil.move(str(dest), str(_previous_app()))
     shutil.move(str(staged), str(dest))
     if sys.platform == "darwin":
-        subprocess.Popen(["open", str(dest)], start_new_session=True)
+        if _previous_app().is_dir():
+            subprocess.run([LSREGISTER, "-u", str(_previous_app())], capture_output=True)
+        if not os.environ.get("MACCLEAN_NO_REOPEN"):
+            subprocess.Popen(["open", str(dest)], start_new_session=True)
     return {"to": rel["version"], "path": str(dest)}
 
 

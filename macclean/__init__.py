@@ -1,2 +1,2 @@
 """macclean: a storage dashboard and catch-all folder organiser for macOS."""
-__version__ = "0.9.0"
+__version__ = "0.9.1"

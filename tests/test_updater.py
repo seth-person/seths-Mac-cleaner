@@ -68,7 +68,7 @@ class Sandbox(unittest.TestCase):
         self.apps = self.home / "Applications"
         self.env_backup = dict(os.environ)
         os.environ.update(HOME=str(self.home), MACCLEAN_INSTALL_ROOT=str(self.root),
-                          MACCLEAN_APPS_DIR=str(self.apps))
+                          MACCLEAN_APPS_DIR=str(self.apps), MACCLEAN_NO_REOPEN="1")
         os.environ.pop("MACCLEAN_APP_BUNDLE", None)
 
         # Source tree of the "new" release.
@@ -184,6 +184,37 @@ class AppModeTests(Sandbox):
         with self.assertRaisesRegex(updater.UpdateError, "signed"):
             updater.install_latest()
         self.assertEqual(updater._bundle_version(app), "0.0.1")
+
+    def test_backup_copy_never_replaces_the_new_version(self):
+        # Opened the Roll back copy instead of the app in Applications, then clicked Update.
+        app = self.make_installed_app("0.0.2")
+        backup = updater._previous_app()
+        backup.parent.mkdir(parents=True)
+        shutil.copytree(app, backup)
+        with open(backup / "Contents" / "Info.plist", "wb") as f:
+            import plistlib
+            plistlib.dump({"CFBundleShortVersionString": "0.0.1"}, f)
+        os.environ["MACCLEAN_APP_BUNDLE"] = str(backup)
+        info = updater.check(force=True)
+        self.assertIn("backup copy", info["blocked"])
+        self.assertIn("Applications", info["blocked"])
+        with self.assertRaises(updater.UpdateError):
+            updater.install_latest()
+        with self.assertRaises(updater.UpdateError):
+            updater.rollback()
+        self.assertEqual((updater._bundle_version(app), updater._bundle_version(backup)), ("0.0.2", "0.0.1"))
+
+    def test_swap_script_refuses_to_swap_the_backup_with_itself(self):
+        app = self.make_installed_app("0.0.1")
+        staged = updater._stage_app(updater.latest_release())
+        backup = updater._previous_app()
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(app, backup)
+        os.environ["MACCLEAN_APP_BUNDLE"] = str(backup)
+        updater._swap_to(staged).wait(timeout=30)
+        self.assertEqual(updater._bundle_version(staged), NEW)  # the new version wasn't destroyed
+        self.assertTrue(backup.is_dir())
+        self.assertIn("backup", updater.last_update_problem() or "")
 
     def test_running_from_disk_image_is_blocked(self):
         self.make_installed_app("0.0.1")
