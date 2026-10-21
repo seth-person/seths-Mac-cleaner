@@ -24,7 +24,8 @@ def _check_source(src: Path, cfg: dict) -> Path:
     src = Path(os.path.abspath(os.path.expanduser(str(src))))
     if not os.path.lexists(src):
         raise ActionError(f"{src} no longer exists")
-    real = os.path.realpath(src) if not src.is_symlink() else str(src)
+    # A symlink is judged by where it sits, not where it points.
+    real = os.path.realpath(src) if not src.is_symlink() else os.path.join(os.path.realpath(src.parent), src.name)
     if not real.startswith(str(os.path.realpath(config.home())) + os.sep):
         raise ActionError(f"{src} is outside your home folder; Mac Cleaner only touches your own files")
     reason = safety.protected_reason(str(src), cfg)

@@ -374,17 +374,20 @@ def _unzip(data: bytes, dest: Path) -> None:
     zpath = dest.parent / (dest.name + ".zip")
     zpath.write_bytes(data)
     try:
+        root = dest.resolve()
+        with zipfile.ZipFile(zpath) as zf:
+            # Checked up front so ditto and the fallback refuse the same updates.
+            for name in zf.namelist():
+                if not str((dest / name).resolve()).startswith(str(root) + os.sep):
+                    raise UpdateError(f"Refusing unsafe path in update: {name}")
         if shutil.which("ditto"):
             r = subprocess.run(["ditto", "-x", "-k", str(zpath), str(dest)], capture_output=True, text=True)
             if r.returncode != 0:
                 raise UpdateError("Couldn't unpack the update: " + r.stderr.strip())
             return
-        root = dest.resolve()
         with zipfile.ZipFile(zpath) as zf:
             for info in zf.infolist():
                 target = (dest / info.filename).resolve()
-                if not str(target).startswith(str(root) + os.sep):
-                    raise UpdateError(f"Refusing unsafe path in update: {info.filename}")
                 mode_bits = info.external_attr >> 16
                 if info.is_dir():
                     target.mkdir(parents=True, exist_ok=True)

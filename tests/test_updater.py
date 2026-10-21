@@ -93,9 +93,10 @@ class Sandbox(unittest.TestCase):
                         "assets": [{"name": n, "url": "fake://" + n} for n in self.files]}
 
         self._saved = {k: getattr(updater, k) for k in
-                       ("_request", "running_from_install", "_check_staged_engine", "_app_pid")}
+                       ("_request", "running_from_install", "_check_staged_engine", "_app_pid", "signed_by_us")}
         updater._request = self.fake_request
         updater._check_staged_engine = lambda app, version: None  # can't run a macOS binary here
+        updater.signed_by_us = lambda app: None  # the test build isn't signed (codesign would refuse it on a Mac)
         updater._app_pid = lambda: 2 ** 22 + 12345  # a process that doesn't exist: swap right away
 
     def tearDown(self):
@@ -174,6 +175,13 @@ class AppModeTests(Sandbox):
         name = f"Mac-Cleaner-{NEW}.zip"
         self.files[name] = self.files[name][:-10] + b"0" * 10
         with self.assertRaises(updater.UpdateError):
+            updater.install_latest()
+        self.assertEqual(updater._bundle_version(app), "0.0.1")
+
+    def test_unsigned_download_changes_nothing(self):
+        app = self.make_installed_app("0.0.1")
+        updater.signed_by_us = lambda app: False
+        with self.assertRaisesRegex(updater.UpdateError, "signed"):
             updater.install_latest()
         self.assertEqual(updater._bundle_version(app), "0.0.1")
 
