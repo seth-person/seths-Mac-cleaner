@@ -1,0 +1,7 @@
+{
+    "name": "Stem Prep",
+    "author": "seth-person",
+    "entry": "dist/extension.js",
+    "version": "0.1.0",
+    "minimumApiVersion": "1.0.0"
+}

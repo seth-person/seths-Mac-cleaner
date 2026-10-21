@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stem Prep</title>
+<style>
+  :root {
+    --bg: #3a3a3a;
+    --panel: #2e2e2e;
+    --line: #262626;
+    --text: #e8e8e8;
+    --muted: #a0a0a0;
+    --accent: #ffa500;
+    --warn: #ff7a59;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.4 -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    gap: 12px;
+  }
+  h1 { font-size: 15px; margin: 0; }
+  h2 { font-size: 11px; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  section { background: var(--panel); border: 1px solid var(--line); padding: 10px 12px; }
+  .big { font-size: 14px; }
+  .sub { color: var(--muted); }
+  .grow { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+  .grow ul { flex: 1; }
+  li { padding: 2px 0; display: flex; gap: 8px; align-items: baseline; }
+  .tag { font-size: 11px; color: var(--muted); }
+  .tag.warn { color: var(--warn); }
+  label.device { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+  input[type=text] {
+    width: 100%; padding: 6px 8px; background: #1f1f1f; color: var(--text);
+    border: 1px solid var(--line); font: inherit;
+  }
+  input[type=text]:focus { outline: 1px solid var(--accent); }
+  .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+  button { min-width: 96px; padding: 7px 14px; border: none; font: inherit; cursor: pointer; background: #555; color: var(--text); }
+  button.primary { background: var(--accent); color: #000; }
+  button:disabled { opacity: .5; cursor: default; }
+  .lines p { margin: 0 0 8px; }
+  .path { font-size: 11px; color: var(--muted); word-break: break-all; }
+</style>
+</head>
+<body>
+<script id="data" type="application/json">__STEM_PREP_DATA__</script>
+<script>
+  function send(result) {
+    const message = { method: "close_and_send", params: [JSON.stringify(result)] };
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.live) {
+      window.webkit.messageHandlers.live.postMessage(message);
+    } else if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage(message);
+    }
+  }
+
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "text") node.textContent = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else if (value !== false && value != null) node.setAttribute(key, value === true ? "" : value);
+    }
+    for (const child of children || []) node.append(child);
+    return node;
+  }
+
+  function trackTag(track) {
+    const parts = [track.kind];
+    if (track.inGroup) parts.push("in " + track.inGroup);
+    return parts.join(", ");
+  }
+
+  function renderPrepare(view) {
+    const songInput = el("input", { type: "text", id: "song", value: view.song, placeholder: "Song name" });
+    const okButton = el("button", { class: "primary", text: "Get ready", onclick: submit });
+    const boxes = [];
+
+    function update() { okButton.disabled = !songInput.value.trim(); }
+    function submit() {
+      if (okButton.disabled) return;
+      const switchOff = boxes.filter((b) => b.checked).map((b) => Number(b.dataset.index));
+      send({ ok: true, song: songInput.value.trim(), switchOff });
+    }
+    songInput.addEventListener("input", update);
+    songInput.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+
+    const devices = view.devices.length === 0
+      ? [el("p", { class: "sub", text: "The Main track has no effects." })]
+      : view.devices.map((d) => {
+          const box = el("input", { type: "checkbox", "data-index": String(d.index), checked: d.on === true, disabled: d.on !== true });
+          if (d.on === true) boxes.push(box);
+          const note = d.on === null ? "no on/off switch" : d.on ? "" : "already off";
+          return el("label", { class: "device" }, [box, el("span", { text: d.name }), el("span", { class: "tag", text: note })]);
+        });
+
+    const muted = view.tracks.filter((t) => t.muted).length;
+    document.body.append(
+      el("h1", { text: "Stem Prep: Get ready" }),
+      el("section", {}, [
+        el("h2", { text: "Section to export" }),
+        el("div", { class: "big", text: view.rangeLabel }),
+        el("div", { class: "sub", text: view.lengthLabel }),
+      ]),
+      el("section", { class: "grow" }, [
+        el("h2", { text: `Tracks (${view.tracks.length}${muted ? `, ${muted} muted` : ""})` }),
+        el("ul", {}, view.tracks.map((t) =>
+          el("li", {}, [
+            el("span", { text: t.name }),
+            el("span", { class: "tag", text: trackTag(t) }),
+            t.muted ? el("span", { class: "tag warn", text: "muted" }) : "",
+          ]))),
+      ]),
+      el("section", {}, [el("h2", { text: "Main track effects to switch off" }), ...devices]),
+      el("section", {}, [el("h2", { text: "Song name" }), songInput]),
+      el("div", { class: "path", text: "Records are saved in " + view.storageDir }),
+      el("div", { class: "buttons" }, [
+        el("button", { text: "Cancel", onclick: () => send({ ok: false }) }),
+        okButton,
+      ]),
+    );
+    update();
+    songInput.focus();
+  }
+
+  function renderMessage(view) {
+    const ok = el("button", { class: "primary", text: "OK", onclick: () => send({ ok: true }) });
+    document.body.append(
+      el("h1", { text: view.title }),
+      el("section", { class: "grow lines" }, view.lines.map((line) => el("p", { text: line }))),
+      el("div", { class: "buttons" }, [ok]),
+    );
+    ok.focus();
+  }
+
+  window.addEventListener("DOMContentLoaded", () => {
+    const view = JSON.parse(document.getElementById("data").textContent);
+    if (view.mode === "prepare") renderPrepare(view);
+    else renderMessage(view);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") send({ ok: false }); });
+  });
+</script>
+</body>
+</html>

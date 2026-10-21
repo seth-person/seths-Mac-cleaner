@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+dist/
+# Ableton's SDK packages. Their licence doesn't allow passing them on, so they
+# stay out of this public repo. See README.md for where to get them.
+vendor/
+
+*.log
+*.ablx
+*.tsbuildinfo
+
+.env
