@@ -100,7 +100,8 @@ def find_for_project(con, project: str) -> dict:
         for ref in res["missing_refs"]:
             shown = ref["path"] or ref["rel"]
             name = os.path.basename(shown)
-            cands = [p for p in names.get(name.casefold(), []) if not safety.norm(p).startswith(safety.norm(project) + "/")]
+            cands = sorted((p for p in names.get(name.casefold(), []) if not safety.norm(p).startswith(safety.norm(project) + "/")),
+                           key=lambda p: ("/Samples/" in p, len(p), p))  # a sample folder before another project's copy
             items.append({"name": name, "was": shown, "where": ref.get("where") or "", "gone": why_gone(ref["path"]),
                           "candidates": cands[:5], "more": max(0, len(cands) - 5)})
         sets.append({"set": s, "mtime": mtime, "missing": len(items), "items": items,
