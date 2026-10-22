@@ -69,6 +69,8 @@ DEFAULT_CONFIG = {
     "ableton_buckets": ["Active", "Ideas", "Finished", "Archive"],
     # The music library: one folder everything music-related is filed under, so
     # it can move as a whole later. Unset until you set it up in the Plan tab.
+    # A rekordbox collection export (File → Export Collection in xml format): its tracks stay put.
+    "rekordbox_xml": "",
     "library_root": "{cloud}",
     "library_ready": False,
     # Folder names inside the library (and two document homes).
@@ -81,6 +83,8 @@ DEFAULT_CONFIG = {
         "source_tracks": "Samples/Source Tracks",
         "brand": "Brand",
         "exports": "Exports",
+        # Broken projects you've marked "Archive as broken": a folder of their own.
+        "broken": "Broken Projects",
         "school": "{cloud}/Documents/School",
         "money": "{cloud}/Documents/Money",
     },
@@ -223,12 +227,14 @@ def library_paths(cfg: dict) -> dict:
     out = {"root": str(root), "ready": bool(cfg.get("library_ready"))}
     for k in ("projects", "releases", "work", "samples", "source_tracks", "brand"):
         out[k] = str(root / lay[k])
+    out["broken"] = str(root / lay["broken"])
     if out["ready"]:
         out["statuses"] = {s: str(root / lay["projects"] / s) for s in lay["statuses"]}
     else:  # until it's set up, projects go where the Ableton tab already files them
         proj = expand(cfg["ableton_root"], cfg)
         out["projects"] = str(proj)
         out["statuses"] = {s: str(proj / s) for s in cfg.get("ableton_buckets") or lay["statuses"]}
+        out["broken"] = str(proj / lay["broken"])
     out["exports"] = lay["exports"]
     out["school"] = str(expand(lay["school"], cfg))
     out["money"] = str(expand(lay["money"], cfg))

@@ -318,10 +318,35 @@ function tile(k, v, d, onclick) {
     h("div", { class: "v" }, v), h("div", { class: "d" }, d));
 }
 
+// A copy of Mac Cleaner's own data found in a library folder, when this Mac has none.
+let dataCopyDismissed = false;
+async function dataCopyOffer() {
+  if (dataCopyDismissed) return null;
+  let d;
+  try { d = await get("/api/data-copy"); } catch (e) { return null; }
+  const o = d.offer;
+  if (!o) return null;
+  const card = h("div", { class: "card note", style: { marginBottom: "14px" } },
+    h("h2", {}, "Bring back your tags?"),
+    h("p", {}, "Mac Cleaner found a copy of its data in ", h("b", {}, pretty(o.path)), o.saved_at ? `, saved ${agoText(o.saved_at)}` : "", ": ",
+      [o.tags ? `${o.tags} tag${o.tags === 1 ? "" : "s"} on ${o.tagged} project${o.tagged === 1 ? "" : "s"}` : null,
+        o.important ? `${o.important} starred project${o.important === 1 ? "" : "s"}` : null, "saved plans and settings"].filter(Boolean).join(", "), ". ",
+      "Restoring it puts them back on this Mac. Nothing in your music folders changes."),
+    h("div", { class: "toolbar" },
+      h("button", { class: "btn primary", onclick: async () => {
+        const r = await post("/api/data-copy/restore", { path: o.path });
+        if (!r.ok) return toast(r.error);
+        toast("Restored your tags, marks and settings.");
+        route();
+      } }, "Restore"),
+      h("button", { class: "btn", onclick: () => { dataCopyDismissed = true; card.remove(); } }, "Not now")));
+  return card;
+}
+
 // ---------------------------------------------------------------- overview
 VIEWS.overview = async (root) => {
-  const [ov, inbox, purge, abl] = await Promise.all([
-    get("/api/overview"), get("/api/inbox"), get("/api/purge"), get("/api/ableton")]);
+  const [ov, inbox, purge, abl, restoreCard] = await Promise.all([
+    get("/api/overview"), get("/api/inbox"), get("/api/purge"), get("/api/ableton"), dataCopyOffer()]);
   if (!ov.has_scan) return noScan(root);
   updateBadges(inbox, purge);
   const m = ov.meta;
@@ -350,7 +375,8 @@ VIEWS.overview = async (root) => {
     tile("Ready to clean", fmt.size(safe), `+ ${fmt.size(review)} to check first`, () => (location.hash = "#cleanup")),
     tile("Ableton projects", fmt.count(t.projects),
       `${t.outside_library} outside your projects folder · ${t.needs_collect} need Collect All`, () => openTab("collect")),
-    ov.cloud ? tile("iCloud Drive", fmt.size(ov.cloud.size), `${fmt.size(ov.cloud.alloc)} downloaded to this Mac`) : null);
+    ov.cloud ? tile("iCloud Drive", fmt.size(ov.cloud.size), abl.icloud && abl.icloud.cloud_only_files
+      ? `${fmt.size(abl.icloud.cloud_only_bytes)} of your files only in iCloud` : "everything is on this Mac") : null);
 
   // share of space by group
   const byGroup = new Map(GROUPS.map((g) => [g.id, { g, alloc: 0, count: 0 }]));
@@ -402,7 +428,7 @@ VIEWS.overview = async (root) => {
     h("div", { class: "toolbar" }, h("div", {}, h("h1", {}, "Overview"),
       h("div", { class: "ink2" }, `Scanned ${JSON.parse(m.roots || "[]").map(whereName).join(", ")} on ${m.scanned_at}`)),
     h("div", { class: "spacer" }), h("button", { class: "btn", onclick: showSurvey }, "Survey report")),
-    errors || "", hero, tiles,
+    errors || "", restoreCard || "", hero, tiles, icloudCard(abl.icloud) || "",
     h("div", { class: "card", style: { marginBottom: "14px" } }, h("h2", {}, "Where the space goes"), share, legend),
     h("div", { class: "grid cols-2" },
       h("div", { class: "card" }, h("h2", {}, "Biggest folders in your home"), dirs),
@@ -690,7 +716,7 @@ VIEWS.inbox = async (root) => {
         h("td", { class: "name" },
           h("span", { class: "trunc", title: i.name }, i.name + (i.is_dir ? "/" : "")),
           i.used_by ? h("span", { class: "status warning", title: i.used_by.map(short).join("\n") },
-            h("span", { class: "dot" }), `Used by ${i.used_by.length} Ableton set${i.used_by.length > 1 ? "s" : ""} elsewhere`) : null),
+            h("span", { class: "dot" }), i.used_by_text ? `Used by ${i.used_by_text}` : `Used by ${i.used_by.length} Ableton set${i.used_by.length > 1 ? "s" : ""} elsewhere`) : null),
         h("td", {}, h("span", { class: "chip" }, h("i", { class: "sw", style: { background: i.kind === "ableton-project" ? "var(--c1)" : groupOf(i.category).color } }), kindLabel)),
         h("td", { class: "num" }, fmt.size(i.size)),
         h("td", { class: "num " + (i.stale ? "" : "muted"), title: "Since last modified" }, i.stale ? h("b", {}, fmt.age(i.age_days)) : fmt.age(i.age_days)),
@@ -796,7 +822,8 @@ VIEWS.plan = async (root) => {
   const parts = [head, lib.ready ? null : librarySetup(data), picker];
   if (lib.ready) {
     parts.push(h("p", { class: "ink2" }, "Library: ", h("b", {}, pretty(lib.root)), ` · projects in ${pretty(lib.projects)}/`,
-      Object.keys(lib.statuses).join(", ")));
+      Object.keys(lib.statuses).join(", "),
+      h("div", { class: "muted", style: { fontSize: "12px" } }, "A copy of your tags, marks, saved plans and settings is kept in its “Mac Cleaner data” folder, so they go wherever your files go.")));
   }
   if (!planFolder) {
     root.replaceChildren(...parts.filter(Boolean), h("div", { class: "card empty" }, h("h2", {}, "Choose a folder"),
@@ -977,7 +1004,7 @@ VIEWS.cleanup = async (root) => {
 
 // ----------------------------------------------------------------- ableton
 let musicTab = "recent";
-const MUSIC_TABS = [["recent", "Recent"], ["important", "Important"], ["collect", "Collect All"], ["projects", "All projects"], ["packs", "Factory Packs"]];
+const MUSIC_TABS = [["recent", "Recent"], ["songs", "Songs"], ["important", "Important"], ["tags", "Tags"], ["collect", "Collect All"], ["projects", "All projects"], ["packs", "Factory Packs"]];
 const musicTabs = (counts) => h("div", { class: "seg" }, MUSIC_TABS.map(([k, l]) =>
   h("button", { class: musicTab === k ? "on" : "", onclick: () => { musicTab = k; route(); } },
     l, counts && counts[k] ? ` (${counts[k]})` : "")));
@@ -986,6 +1013,144 @@ const openTab = (k) => { musicTab = k; location.hash === "#music" ? route() : (l
 function abletonHeader(sub, counts) {
   return h("div", {}, h("h1", {}, "Ableton"), h("div", { class: "toolbar" }, musicTabs(counts)),
     h("p", { class: "ink2" }, sub));
+}
+
+// ------------------------------------------------------------------ tags
+// Tags live in Mac Cleaner's own data (never in the projects). The filter bar
+// narrows Recent, Important and All projects: every chosen tag must match.
+let TAGDEFS = [];
+let TAGKINDS = [];
+const tagFilter = new Set();
+let projectSearch = "";
+let refocusSearch = false;
+const tagDef = (name) => TAGDEFS.find((d) => d.name === name) || { name, kind: "Other", color: 8 };
+const byKind = (defs) => {
+  const m = new Map();
+  for (const d of defs) { if (!m.has(d.kind)) m.set(d.kind, []); m.get(d.kind).push(d); }
+  const order = (k) => { const i = TAGKINDS.indexOf(k); return i < 0 ? 99 : i; };
+  return [...m].sort((a, b) => order(a[0]) - order(b[0]) || a[0].localeCompare(b[0]))
+    .map(([k, ds]) => [k, ds.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))]);
+};
+function tagChip(name, opts = {}) {
+  const d = tagDef(name);
+  return h("span", { class: "chip tag" + (opts.on ? " on" : ""), title: opts.title || `${d.kind}: ${d.name}`, role: opts.onclick ? "button" : null,
+    tabindex: opts.onclick ? "0" : null, onclick: opts.onclick || null,
+    onkeydown: opts.onclick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); opts.onclick(e); } } : null },
+  h("i", { class: "sw", style: { background: `var(--c${d.color || 8})` } }), d.name);
+}
+function passTags(p) {
+  for (const t of tagFilter) if (!(p.tags || []).includes(t)) return false;
+  const q = projectSearch.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [p.name, p.parent, ...(p.tags || []), ...(p.sets || []).map((s) => setName(s.path))].join("\n").toLowerCase();
+  return q.split(/\s+/).every((w) => hay.includes(w));
+}
+function filterBar(projects) {
+  const counts = new Map();
+  for (const p of projects) for (const t of p.tags || []) counts.set(t, (counts.get(t) || 0) + 1);
+  let timer = null;
+  const search = h("input", { type: "search", id: "proj-search", value: projectSearch, placeholder: "Search projects, sets and tags",
+    "aria-label": "Search projects", oninput: () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { projectSearch = search.value; refocusSearch = true; route(); }, 250);
+    } });
+  if (refocusSearch) { refocusSearch = false; setTimeout(() => { search.focus(); search.setSelectionRange(search.value.length, search.value.length); }, 0); }
+  const toggle = (name) => { if (tagFilter.has(name)) tagFilter.delete(name); else tagFilter.add(name); route(); };
+  const groups = byKind(TAGDEFS.filter((d) => counts.has(d.name) || tagFilter.has(d.name))).map(([kind, ds]) =>
+    h("span", { class: "group" }, h("span", { class: "muted" }, kind), ds.map((d) =>
+      tagChip(d.name, { on: tagFilter.has(d.name), onclick: () => toggle(d.name), title: `${counts.get(d.name) || 0} project${counts.get(d.name) === 1 ? "" : "s"} · click to ${tagFilter.has(d.name) ? "stop filtering" : "show only these"}` }))));
+  const shown = projects.filter(passTags).length;
+  return h("div", { class: "tag-bar" }, search, ...groups,
+    tagFilter.size || projectSearch ? [h("span", { class: "ink2" }, `${shown} of ${projects.length}`),
+      h("button", { class: "btn small", onclick: () => { tagFilter.clear(); projectSearch = ""; route(); } }, "Clear")] : null,
+    !TAGDEFS.length ? h("span", { class: "muted" }, "No tags yet: use + Tag on any project.") : null);
+}
+// Tick tags for one project, or add a new one.
+async function editTags(p, after) {
+  const chosen = new Set(p.tags || []);
+  const list = h("div", { class: "tag-pick" });
+  const draw = () => list.replaceChildren(...byKind(TAGDEFS).map(([kind, ds]) => h("div", {}, h("div", { class: "muted" }, kind),
+    ds.map((d) => { const cb = h("input", { type: "checkbox", checked: chosen.has(d.name), onchange: () => { if (cb.checked) chosen.add(d.name); else chosen.delete(d.name); } });
+      return h("label", {}, cb, tagChip(d.name)); }))),
+  ...(TAGDEFS.length ? [] : [h("p", { class: "muted" }, "No tags yet. Make the first one below.")]));
+  draw();
+  const nameIn = h("input", { type: "text", id: "new-tag-name", placeholder: "New tag, e.g. Forever or Remix", maxlength: 40 });
+  const kindIn = h("input", { type: "text", id: "new-tag-kind", list: "tag-kinds", value: "Album / EP", style: { width: "130px" }, "aria-label": "Kind of tag" });
+  const add = async () => {
+    const name = nameIn.value.trim();
+    if (!name) return;
+    const r = await post("/api/tag", { op: "create", name, kind: kindIn.value.trim() || "Other" });
+    if (!r.ok) return toast(r.error);
+    TAGDEFS.push(r.tag); chosen.add(r.tag.name); nameIn.value = ""; draw();
+  };
+  nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } });
+  const body = h("div", {}, list, h("div", { class: "toolbar", style: { marginTop: "10px" } }, nameIn, kindIn,
+    h("datalist", { id: "tag-kinds" }, TAGKINDS.map((k) => h("option", { value: k }))),
+    h("button", { class: "btn", onclick: add }, "Add")));
+  const ok = await modal(`Tags for ${projName(p)}`, body, [{ label: "Cancel", value: false }, { label: "Save", value: true, cls: "primary" }]);
+  if (!ok) return;
+  const r = await post("/api/ableton/tags", { path: p.path, tags: [...chosen] });
+  if (!r.ok) return toast(r.error);
+  p.tags = r.tags;
+  if (after) after(); else route();
+}
+async function tagMany(projects) {
+  const nameIn = h("input", { type: "text", id: "many-tag", list: "all-tags", placeholder: "Tag name", maxlength: 40, style: { width: "100%" } });
+  const body = h("div", {}, h("p", { class: "ink2" }, `Adds a tag to ${projects.length} project${projects.length === 1 ? "" : "s"}. Their other tags stay.`),
+    nameIn, h("datalist", { id: "all-tags" }, TAGDEFS.map((d) => h("option", { value: d.name }))),
+    TAGDEFS.length ? h("div", { class: "tag-cell", style: { marginTop: "8px" } }, TAGDEFS.map((d) => tagChip(d.name, { onclick: () => { nameIn.value = d.name; } }))) : null);
+  const ok = await modal("Add a tag", body, [{ label: "Cancel", value: false }, { label: "Add tag", value: true, cls: "primary" }]);
+  if (!ok || !nameIn.value.trim()) return;
+  const r = await post("/api/ableton/tags", { paths: projects.map((p) => p.path), add: [nameIn.value.trim()] });
+  if (!r.ok) return toast(r.error);
+  toast(`Tagged ${projects.length} project${projects.length === 1 ? "" : "s"} “${r.tags[0]}”.`);
+  route();
+}
+function tagCell(p) {
+  return h("span", { class: "tag-cell" }, (p.tags || []).map((t) => tagChip(t, { on: tagFilter.has(t), onclick: (e) => {
+    e.stopPropagation(); if (tagFilter.has(t)) tagFilter.delete(t); else tagFilter.add(t); route(); } })),
+  h("button", { class: "btn small", title: "Add or remove tags", onclick: (e) => { e.stopPropagation(); editTags(p); } }, (p.tags || []).length ? "Edit" : "+ Tag"));
+}
+
+async function tagsView(root, data, head) {
+  const counts = new Map();
+  for (const p of data.projects) for (const t of p.tags || []) counts.set(t, (counts.get(t) || 0) + 1);
+  const change = async (body, msg) => {
+    const r = await post("/api/tag", body);
+    if (!r.ok) return toast(r.error);
+    if (msg) toast(msg);
+    route();
+  };
+  const rows = byKind(TAGDEFS).map(([kind, ds]) => h("div", { class: "card" }, h("h2", { style: { margin: "0 0 6px" } }, kind),
+    h("table", {}, h("tbody", {}, ds.map((d) => {
+      const nameIn = h("input", { type: "text", value: d.name, maxlength: 40, "aria-label": "Tag name",
+        onchange: () => nameIn.value.trim() && nameIn.value.trim() !== d.name && change({ op: "update", name: d.name, new_name: nameIn.value.trim() }, "Renamed everywhere it's used.") });
+      const kindIn = h("input", { type: "text", value: d.kind, list: "tag-kinds-view", style: { width: "130px" }, "aria-label": "Kind",
+        onchange: () => change({ op: "update", name: d.name, kind: kindIn.value.trim() || "Other" }) });
+      const colour = h("select", { "aria-label": "Colour", onchange: () => change({ op: "update", name: d.name, color: Number(colour.value) }) },
+        [1, 2, 3, 4, 5, 6, 7, 8].map((c) => h("option", { value: c, selected: c === d.color }, ["Blue", "Orange", "Green", "Amber", "Pink", "Dark green", "Purple", "Red"][c - 1])));
+      const n = counts.get(d.name) || 0;
+      return h("tr", {},
+        h("td", { style: { width: "1%" } }, tagChip(d.name)),
+        h("td", {}, nameIn), h("td", {}, kindIn), h("td", {}, colour),
+        h("td", { class: "num ink2" }, `${n} project${n === 1 ? "" : "s"}`),
+        h("td", { style: { width: "1%", whiteSpace: "nowrap" } },
+          h("button", { class: "btn small", disabled: !n, onclick: () => { tagFilter.clear(); tagFilter.add(d.name); openTab("projects"); } }, "Show projects"), " ",
+          h("button", { class: "btn small", onclick: async () => {
+            const ok = await modal(`Delete the tag “${d.name}”?`, h("p", {}, `It's removed from ${n} project${n === 1 ? "" : "s"}. The projects themselves aren't touched.`),
+              [{ label: "Cancel", value: false }, { label: "Delete tag", value: true, cls: "danger" }]);
+            if (ok) change({ op: "delete", name: d.name }, "Tag deleted.");
+          } }, "Delete")));
+    })))));
+  const nameIn = h("input", { type: "text", id: "tags-new-name", placeholder: "New tag name", maxlength: 40 });
+  const kindIn = h("input", { type: "text", id: "tags-new-kind", list: "tag-kinds-view", value: "Album / EP", style: { width: "140px" }, "aria-label": "Kind" });
+  root.replaceChildren(head,
+    h("datalist", { id: "tag-kinds-view" }, TAGKINDS.map((k) => h("option", { value: k }))),
+    h("div", { class: "card", style: { marginBottom: "14px" } }, h("div", { class: "toolbar" }, nameIn, kindIn,
+      h("button", { class: "btn primary", onclick: () => nameIn.value.trim() && change({ op: "create", name: nameIn.value.trim(), kind: kindIn.value.trim() || "Other" }, "Tag added.") }, "Add tag"),
+      h("span", { class: "ink2" }, "Kinds group your tags: an album, a type of project (Remix, Collab, Sketch), a status…"))),
+    TAGDEFS.length ? h("div", { class: "stack" }, rows) : h("div", { class: "card empty" }, h("h2", {}, "No tags yet"),
+      h("p", {}, "Add one here, or use ", h("b", {}, "+ Tag"), " on any project. In All projects you can tick several projects and tag them all at once.")));
 }
 
 const SLIPPING_DAYS = 30;
@@ -1139,7 +1304,7 @@ function projectTable(projects, cols) {
     return [h("tr", { class: p.sets.length ? "has-sets" : "" },
       h("td", { class: "check" }, starButton(p)),
       h("td", { class: "name rowlink", onclick: () => (detail.hidden = !detail.hidden) },
-        h("span", { class: "trunc", style: { color: "var(--accent)" } }, projName(p)),
+        h("span", { class: "trunc", style: { color: "var(--accent)" } }, projName(p)), cloudChip(p),
         h("span", { class: "trunc path", title: p.path }, pretty(p.parent))),
       cols.map((c) => h("td", { class: c.num ? "num ink2" : "" }, c.cell(p))),
       h("td", { style: { width: "1%" } }, finderButton(p))),
@@ -1150,20 +1315,75 @@ function projectTable(projects, cols) {
 function recentView(root, data, head) {
   const live = data.recent_from_live;
   const byOpened = (a, b) => (a.opened_rank ?? 1e9) - (b.opened_rank ?? 1e9) || (b.mtime || 0) - (a.mtime || 0);
-  const list = [...data.projects].filter((p) => p.status !== "no-sets").sort(live ? byOpened : (a, b) => (b.mtime || 0) - (a.mtime || 0)).slice(0, 30);
-  root.replaceChildren(head,
+  const all = data.projects.filter((p) => p.status !== "no-sets");
+  const list = all.filter(passTags).sort(live ? byOpened : (a, b) => (b.mtime || 0) - (a.mtime || 0)).slice(0, tagFilter.size || projectSearch ? 300 : 30);
+  root.replaceChildren(head, filterBar(all),
     list.length ? h("div", { class: "card" }, projectTable(list, [
       live ? { label: "Opened", cell: (p) => p.opened_rank == null ? h("span", { class: "muted" }, "—") : `#${p.opened_rank + 1}` } : null,
       { label: "Last saved", num: true, cell: (p) => fmt.ago(p.mtime) },
       { label: "Samples", cell: samplesStatus },
+      { label: "Tags", cell: tagCell },
     ].filter(Boolean)), h("p", { class: "muted" }, "Click a name for details."))
-      : h("div", { class: "card empty" }, "No Ableton projects found in the last scan."));
+      : h("div", { class: "card empty" }, tagFilter.size || projectSearch ? "No projects match. Clear the filter to see them all." : "No Ableton projects found in the last scan."));
+}
+
+// Songs: each project's master, newest bounce and stems in one row, to find and play them.
+const MASTER_RE = /(^|[^a-z])(master(ed)?|pre-?master|final)(?![a-z])/i;
+let songSort = "saved";
+function songExports(p) {
+  const stemDirs = new Set((p.stem_groups || []).map((g) => g.folder));  // a stems export's full mix isn't a bounce
+  const seen = new Map();
+  for (const s of p.sets) for (const b of s.bounces || []) if (!stemDirs.has(b.path.slice(0, b.path.lastIndexOf("/")))) seen.set(b.path, b);
+  const all = [...seen.values()].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+  return { masters: all.filter((b) => MASTER_RE.test(stem(b.name))), bounces: all.filter((b) => !MASTER_RE.test(stem(b.name))) };
+}
+function songsView(root, data, head) {
+  const all = data.projects.filter((p) => p.sets.length);
+  const byName = (a, b) => projName(a).localeCompare(projName(b), undefined, { numeric: true, sensitivity: "base" });
+  const list = all.filter(passTags).sort(songSort === "name" ? byName : (a, b) => (b.mtime || 0) - (a.mtime || 0));
+  const sortSel = h("select", { "aria-label": "Sort songs", onchange: () => { songSort = sortSel.value; route(); } },
+    [["saved", "Last saved"], ["name", "Name"]].map(([v, l]) => h("option", { value: v, selected: songSort === v }, "Sort: " + l)));
+  const play = (b, none) => b ? playButton(b.path, stem(b.name), `Play ${pretty(b.path)}`) : h("span", { class: "muted" }, none);
+  const more = (n, what) => n > 0 ? h("div", { class: "muted" }, `+ ${n} older ${what}${n === 1 ? "" : "s"}`) : null;
+  const rows = list.slice(0, 500).map((p) => {
+    const { masters, bounces } = songExports(p);
+    const groups = p.stem_groups || [];
+    const mine = groups.filter((g) => !g.received && !g.copy_of);
+    const got = groups.filter((g) => g.received).length, copies = groups.filter((g) => g.copy_of && !g.received).length;
+    return h("tr", {},
+      h("td", { class: "check" }, starButton(p)),
+      h("td", { class: "name", style: { minWidth: "180px" } }, h("b", { class: "trunc", title: p.path }, projName(p)),
+        h("div", { style: { marginTop: "3px" } }, tagCell(p))),
+      h("td", {}, play(masters[0], "no master yet"), more(masters.length - 1, "master")),
+      h("td", {}, play(bounces[0], "none"), more(bounces.length - 1, "bounce")),
+      h("td", {}, mine.length ? h("button", { class: "btn small", title: "Show the newest stems in Finder: " + pretty(mine[0].folder),
+        onclick: () => reveal(mine[0].folder) }, `${mine.length} export${mine.length === 1 ? "" : "s"}`) : h("span", { class: "muted" }, "none"),
+      got ? h("div", { class: "muted" }, `+ ${got} received`) : null,
+      copies ? h("div", { class: "muted", title: "Copies of stems already filed in the project. The Plan suggests trashing them." }, `+ ${copies} cop${copies === 1 ? "y" : "ies"}`) : null),
+      h("td", { class: "num ink2" }, agoText(p.mtime)),
+      h("td", { style: { width: "1%", whiteSpace: "nowrap" } },
+        h("button", { class: "btn small", title: "Open the newest set in Live", onclick: () => openInLive(p.newest_set || p.sets[0].path) }, "Open in Live"), " ",
+        finderButton(p)));
+  });
+  root.replaceChildren(head, h("div", { class: "toolbar" }, filterBar(all), sortSel),
+    rows.length ? h("div", { class: "card" }, h("div", { style: { overflowX: "auto" } }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { class: "check" }), h("th", {}, "Song"),
+      h("th", {}, "Master"), h("th", {}, "Newest bounce"), h("th", {}, "Stems"), h("th", { class: "num" }, "Last saved"), h("th", {}))),
+    h("tbody", {}, rows))),
+    list.length > 500 ? h("p", { class: "muted" }, `Showing 500 of ${list.length}. Search or pick a tag to narrow it down.`) : null,
+    h("p", { class: "muted" }, "Exports are matched by name: “Song V3.wav” and “Song (MASTER).wav” belong to the set “Song”. ▶ plays a file; nothing is moved."))
+      : h("div", { class: "card empty" }, tagFilter.size || projectSearch ? "No songs match. Clear the filter to see them all." : "No Ableton projects found in the last scan."));
 }
 
 function importantView(root, data, head) {
-  const list = data.projects.filter((p) => p.important).sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
+  const starred = data.projects.filter((p) => p.important);
+  const list = starred.filter(passTags).sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
   const slipping = list.filter((p) => daysSince(p.mtime) >= SLIPPING_DAYS);
-  root.replaceChildren(head,
+  const away = starred.filter((p) => p.cloud_only);
+  root.replaceChildren(head, starred.length ? filterBar(starred) : "",
+    away.length ? h("div", { class: "note card", style: { marginBottom: "10px" } },
+      `${away.length} starred project${away.length === 1 ? " has" : "s have"} files only in iCloud. Download them before you go offline (a gig, a flight). `,
+      downloadButton(away.map((p) => p.path), `${away.length} starred project${away.length === 1 ? "" : "s"}`,
+        away.reduce((a, p) => a + p.cloud_only.bytes, 0))) : "",
     slipping.length ? h("div", { class: "warn" }, `${slipping.length} important project${slipping.length === 1 ? " hasn't" : "s haven't"} been saved in over ${SLIPPING_DAYS} days.`) : "",
     list.length ? h("div", { class: "card" }, projectTable(list, [
       { label: "Untouched", num: true, cell: (p) => {
@@ -1173,13 +1393,122 @@ function importantView(root, data, head) {
       } },
       { label: "Samples", cell: samplesStatus },
       { label: "Where", cell: (p) => p.in_library ? h("span", { class: "chip" }, p.bucket || "Projects folder") : h("span", { class: "ink2" }, "outside projects folder") },
+      { label: "Tags", cell: tagCell },
     ]))
       : h("div", { class: "card empty" }, h("h2", {}, "Nothing starred yet"),
         h("p", {}, "Click the ☆ next to a project in Recent or All projects to keep an eye on it here.")));
 }
 
+// Broken projects: "Archive as broken" marks a project so it may move, into a folder
+// of its own. "Allow moving anyway" lets one that isn't broken move despite its outside files.
+async function setProjectFlag(p, flag, on, msg) {
+  const r = await post("/api/ableton/flag", { path: p.path, flag, on });
+  if (!r.ok) { toast(r.error); return false; }
+  p[flag === "archive_broken" ? "archivable" : "move_anyway"] = on;
+  if (msg) toast(msg);
+  return true;
+}
+function archiveButton(p, after) {
+  const btn = h("button", { class: "btn small", title: p.archivable ? "Unmark: it stays with your other projects"
+    : "Mark this project as broken: it may then move, into its own Broken Projects folder", onclick: async (e) => {
+    e.stopPropagation();
+    const on = !p.archivable;
+    if (await setProjectFlag(p, "archive_broken", on, on ? `${projName(p)} is marked for the broken archive.` : `${projName(p)} is no longer marked as broken.`)) (after || route)();
+  } }, p.archivable ? "✓ Marked broken" : "Archive as broken");
+  return btn;
+}
+function moveAnywayToggle(p) {
+  if (p.status !== "external" && p.status !== "missing" && !p.move_anyway) return null;
+  const cb = h("input", { type: "checkbox", checked: !!p.move_anyway, onchange: async () => {
+    if (!(await setProjectFlag(p, "move_anyway", cb.checked, cb.checked
+      ? `${projName(p)} may be moved even though it uses files outside its folder.` : `${projName(p)} stays put until it's self-contained.`))) cb.checked = !cb.checked;
+  } });
+  return h("label", { class: "ink2", title: "Projects that use outside files, or miss some, never move unless you allow it" }, cb, " Allow moving anyway");
+}
+async function moveBroken(data) {
+  const todo = data.projects.filter((p) => p.archivable && !p.in_broken);
+  if (!todo.length) return toast("No projects are marked as broken.");
+  const ok = await confirmItems(`Move ${todo.length} broken project${todo.length === 1 ? "" : "s"}?`,
+    todo.map((p) => ({ label: projName(p), detail: "→ " + pretty(data.broken_dir), bytes: p.alloc })), "Move to Broken Projects",
+    "They keep their outside and missing files as they are: nothing inside them changes. Close Live first. You can undo the whole batch from History.");
+  if (!ok) return;
+  await runActions(todo.map((p) => ({ path: p.path, action: "move", dest: data.broken_dir, bytes: p.alloc })),
+    `Broken projects · ${todo.length} archived`);
+  route();
+}
+function brokenCard(data) {
+  const marked = data.projects.filter((p) => p.archivable);
+  if (!marked.length) return "";
+  const waiting = marked.filter((p) => !p.in_broken);
+  return h("div", { class: "card", style: { marginBottom: "14px" } },
+    h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, `Marked as broken (${marked.length})`),
+      h("span", { class: "ink2" }, waiting.length ? `${waiting.length} still to move into ${pretty(data.broken_dir)}` : `All in ${pretty(data.broken_dir)}`),
+      h("div", { class: "spacer" }),
+      waiting.length ? h("button", { class: "btn primary", onclick: () => moveBroken(data) }, `Move ${waiting.length} to Broken Projects`) : null),
+    h("div", { class: "tag-cell", style: { maxWidth: "none", marginTop: "6px" } }, marked.map((p) =>
+      h("span", { class: "chip", title: pretty(p.path) }, projName(p), p.in_broken ? " ✓" : "", " ",
+        h("button", { class: "btn small", title: "Unmark", "aria-label": "Unmark " + projName(p), onclick: async () => {
+          if (await setProjectFlag(p, "archive_broken", false, `${projName(p)} is no longer marked as broken.`)) route();
+        } }, "×")))));
+}
+
+// Where a project's missing files are now, and which folder to point Live's search at.
+async function findMissing(p) {
+  toast(`Looking for ${projName(p)}'s missing files…`, 2000);
+  let r;
+  try { r = await get("/api/ableton/missing?project=" + encodeURIComponent(p.path)); } catch (e) { return toast(e.message); }
+  if (r.error) return toast(r.error);
+  const steps = h("ol", {},
+    h("li", {}, "In Live, open the set (", h("b", {}, "Open in Live"), " in Collect All)."),
+    h("li", {}, "Choose ", h("b", {}, "File → Manage Files"), ", then ", h("b", {}, "Manage Set"), "."),
+    h("li", {}, "Under Missing Samples, click ", h("b", {}, "Locate"), ". Set ", h("b", {}, "Search Folder"), " to the folder above and click ", h("b", {}, "Go"), ". Live finds them by name."),
+    h("li", {}, "Save the set, then ", h("b", {}, "Re-check"), " here."));
+  const body = h("div", {},
+    h("p", {}, `${r.missing} missing file${r.missing === 1 ? "" : "s"}: `, h("b", {}, `${r.findable} found elsewhere on this Mac`),
+      r.gone ? `, ${r.gone} gone for good` : "", "."),
+    r.folders.length ? h("div", { class: "card note", style: { margin: "8px 0" } }, h("b", {}, "Point Live's search at:"),
+      r.folders.map((f) => h("div", { class: "path" }, pretty(f.folder), ` (${f.covers} file${f.covers === 1 ? "" : "s"}) `,
+        h("button", { class: "btn small", onclick: () => reveal(f.folder) }, "Show")))) : null,
+    r.folders.length ? steps : h("p", { class: "ink2" }, "None of them were found by name on this Mac. If they're gone for good, ", h("b", {}, "Archive as broken"), " keeps the project out of the way."),
+    h("details", {}, h("summary", {}, "Every missing file"),
+      h("div", { style: { maxHeight: "40vh", overflow: "auto" } }, r.sets.map((s) => h("div", { style: { marginTop: "8px" } },
+        h("b", {}, setName(s.set)), s.newest ? h("span", { class: "chip" }, "newest") : null,
+        s.error ? h("span", { class: "muted" }, " couldn't be read") : h("span", { class: "ink2" }, ` ${s.found} of ${s.missing} found`),
+        h("ul", {}, (s.items || []).map((i) => h("li", {}, h("b", {}, i.name),
+          i.candidates.length ? h("div", { class: "path" }, "Now at: ", pretty(i.candidates[0]), i.candidates.length + i.more > 1 ? ` (+${i.candidates.length + i.more - 1} more)` : "")
+            : h("div", { class: "muted" }, i.gone ? `Gone: ${i.gone}.` : "Not found on this Mac.")))))))));
+  await modal(`Missing files in ${projName(p)}`, body);
+}
+// Projects not saved in over 2 years whose newest set misses files: mark them broken in one go.
+const OLD_DAYS = 730;
+function oldBrokenCard(data) {
+  const old = data.projects.filter((p) => !p.archivable && !p.movable && p.status === "missing" && daysSince(p.mtime) > OLD_DAYS);
+  if (!old.length) return "";
+  const review = async () => {
+    const picked = new Set(old.map((p) => p.path));
+    const list = h("div", { style: { maxHeight: "50vh", overflow: "auto" } }, old.map((p) => {
+      const cb = h("input", { type: "checkbox", checked: true, onchange: () => { if (cb.checked) picked.add(p.path); else picked.delete(p.path); } });
+      return h("label", { style: { display: "flex", gap: "8px", alignItems: "baseline", padding: "2px 0" } }, cb,
+        h("span", {}, h("b", {}, projName(p)), " ", h("span", { class: "ink2" }, `${agoText(p.mtime)} · ${p.missing_total} missing`),
+          h("div", { class: "path" }, pretty(p.parent))));
+    }));
+    const ok = await modal(`Mark ${old.length} old projects as broken?`, h("div", {},
+      h("p", { class: "ink2" }, "Untick any you want to keep fixing. Marking only allows them to move into Broken Projects; nothing moves yet."), list),
+    [{ label: "Cancel", value: false }, { label: "Mark as broken", value: true, cls: "primary" }]);
+    if (!ok || !picked.size) return;
+    const r = await post("/api/ableton/flag", { paths: [...picked], flag: "archive_broken", on: true });
+    if (!r.ok) return toast(r.error);
+    toast(`Marked ${r.count} project${r.count === 1 ? "" : "s"} as broken.`);
+    route();
+  };
+  return h("div", { class: "card", style: { marginBottom: "14px" } }, h("div", { class: "toolbar" },
+    h("h2", { style: { margin: 0 } }, `Old and broken (${old.length})`),
+    h("span", { class: "ink2" }, "Not saved in over 2 years, and the newest set misses files."), h("div", { class: "spacer" }),
+    h("button", { class: "btn", onclick: review }, "Review and mark as broken")));
+}
+
 function collectView(root, data, head) {
-  const needs = data.projects.filter((p) => p.status === "external" || p.status === "missing");
+  const needs = data.projects.filter((p) => (p.status === "external" || p.status === "missing") && !p.archivable);
   const unchecked = data.projects.filter((p) => p.status === "unknown");
   const loose = data.loose_sets.filter((s) => s.external || s.missing);
   const countEl = h("h2", {}, "");
@@ -1226,10 +1555,13 @@ function collectView(root, data, head) {
       h("div", { class: "toolbar" }, starButton(p),
         h("div", { style: { minWidth: 0, flex: "1 1 240px" } }, h("b", {}, projName(p)), " ", h("span", { class: "ink2" }, agoText(p.mtime)),
           h("div", { class: "trunc path", title: p.path }, pretty(p.path))),
-        done ? statusPill("good", "Self-contained now") : samplesStatus(p), finderButton(p),
+        done ? statusPill("good", "Self-contained now") : samplesStatus(p),
+        !done && p.movable ? statusPill("good", "Safe to move", "Its newest set is self-contained; only older versions in the folder aren't collected") : null,
+        finderButton(p),
         hasMissing ? h("button", { class: "btn small", title: "Copy what Mac Cleaner found, to paste into a message",
           onclick: () => copyDetails(p) }, "Copy details") : null,
-        done ? null : btn),
+        done ? null : btn, hasMissing ? h("button", { class: "btn small", title: "Look for the missing files elsewhere on this Mac",
+          onclick: () => findMissing(p) }, "Find missing") : null, done ? null : archiveButton(p)),
       h("div", { class: "collect-sets" }, setList(p, true)));
     btn.onclick = () => recheck(p, row, btn);
     return row;
@@ -1243,9 +1575,12 @@ function collectView(root, data, head) {
         h("li", {}, "Click ", h("b", {}, "Open in Live"), " next to the set that needs it. Each set in a project folder is listed separately."),
         h("li", {}, data.collect_steps),
         h("li", {}, "Back here, click ", h("b", {}, "Re-check"), ". The project drops off this list once it's self-contained.")),
+      h("p", { class: "ink2" }, "A project may move once its newest set is self-contained; older versions in the folder don't count. Until then it never moves, unless you allow it. Old ones that are too broken to fix: click ",
+        h("b", {}, "Archive as broken"), " to put them in a folder of their own."),
       h("p", { class: "ink2" }, h("b", {}, "Missing"), " files are ones Mac Cleaner can't find (often old paths, or samples on a drive that isn't plugged in). ",
         "Collect All can't copy those. To see whether Live agrees, open the set and choose File → Manage Files → Manage Set: it lists any missing files and has a Locate button. ",
         "If Live says nothing is missing, Mac Cleaner got it wrong: click ", h("b", {}, "Copy details"), " and send it so it can be fixed.")),
+    brokenCard(data), oldBrokenCard(data),
     rows.length ? h("div", { class: "card" }, countEl,
       h("p", { class: "ink2" }, "Newest first. These use samples from outside their project folder, so they could break if those files move."),
       h("div", { class: "stack" }, rows))
@@ -1364,20 +1699,26 @@ VIEWS.music = async (root) => {
   if (musicTab === "packs") return packsView(root);
   const data = await get("/api/ableton");
   if (!data.has_scan) return noScan(root);
+  TAGDEFS = data.tag_defs || [];
+  TAGKINDS = data.tag_kinds || [];
   const t = data.totals;
   const counts = { important: data.projects.filter((p) => p.important).length, collect: t.needs_collect };
   const sub = {
     recent: data.recent_from_live
       ? "Your projects in the order Live last opened them (from Live's own recent list), then by last saved. Star the ones you don't want to lose track of."
       : "Your projects by when a set in them was last saved (Live's recently-opened list wasn't found). Star the ones you don't want to lose track of.",
+    songs: "Every song with its master, its newest bounce and its stems in one place. Play them from here, or open the set in Live.",
     important: "Projects you've starred, the ones you haven't touched longest first, so nothing slips through the cracks.",
     collect: "Projects that use files from outside their folder. Collect All and Save makes them safe to move.",
     projects: "Every Ableton project found on this Mac, where it lives, and whether it's safe to move.",
+    tags: "Your tags: name them, group them by kind (an album, a type of project), and use them to find projects. Tags are kept by Mac Cleaner; nothing is written into the projects.",
   }[musicTab];
   const head = abletonHeader(sub, counts);
   if (musicTab === "recent") return recentView(root, data, head);
   if (musicTab === "important") return importantView(root, data, head);
   if (musicTab === "collect") return collectView(root, data, head);
+  if (musicTab === "tags") return tagsView(root, data, head);
+  if (musicTab === "songs") return songsView(root, data, head);
   const now = Date.now() / 1000;
   const suggestBucket = (p) => {
     if (p.bucket) return p.bucket;
@@ -1393,13 +1734,15 @@ VIEWS.music = async (root) => {
   const updateBar = () => {
     const items = [...selected.values()];
     actionbar.set(items.length, `${items.length} project${items.length > 1 ? "s" : ""} selected`, [
+      h("button", { class: "btn", onclick: () => tagMany(items) }, "Add tag"),
       h("button", { class: "btn primary", onclick: async () => {
         const todo = items.filter((p) => !(p.in_library && p.bucket === target.get(p.path)));
         if (!todo.length) return toast("Those are already in the chosen buckets.");
-        const risky = todo.filter((p) => p.status === "external" || p.status === "missing");
+        const risky = todo.filter((p) => !p.movable);
         const ok = await confirmItems(`Move ${todo.length} project(s)?`, todo.map((p) => ({
           label: p.name, detail: "→ " + pretty(data.root + "/" + target.get(p.path)),
-        })), "Move", (risky.length ? `${risky.length} of these use files outside the project folder. ${COLLECT_ALL} Otherwise they may show missing samples after moving. ` : "")
+        })), "Move", (risky.filter((p) => !p.move_anyway && !p.archivable).length
+          ? `${risky.filter((p) => !p.move_anyway && !p.archivable).length} of these use files outside the project folder, so they'll be skipped. ${COLLECT_ALL} Or allow moving them in their details. ` : "")
           + "Close these sets in Live before moving them.");
         if (!ok) return;
         await runActions(todo.map((p) => ({ path: p.path, action: "move", dest: data.root + "/" + target.get(p.path) })), `Projects · ${todo.length} moved`);
@@ -1410,9 +1753,10 @@ VIEWS.music = async (root) => {
 
   const tbody = h("tbody", {});
   const passCheck = (p) => checklistFilter === "all" || (checklistFilter === "organised" && checkScore(p.checklist) === 3)
-    || (checklistFilter === "almost" && checkScore(p.checklist) === 2) || (checklistFilter === "needs" && checkScore(p.checklist) <= 1);
+    || (checklistFilter === "almost" && checkScore(p.checklist) === 2) || (checklistFilter === "needs" && checkScore(p.checklist) <= 1)
+    || (checklistFilter === "broken" && p.archivable) || (checklistFilter === "icloud" && p.cloud_only);
   for (const p of data.projects) {
-    if (!passCheck(p)) continue;
+    if (!passCheck(p) || !passTags(p)) continue;
     target.set(p.path, suggestBucket(p));
     const cb = h("input", { type: "checkbox", "aria-label": "Select " + p.name, onchange: () => {
       if (cb.checked) selected.set(p.path, p); else selected.delete(p.path);
@@ -1423,9 +1767,13 @@ VIEWS.music = async (root) => {
     const where = p.in_library ? h("span", { class: "chip" }, p.bucket ? "Projects · " + p.bucket : "Projects · unsorted")
       : h("span", { class: "trunc ink2", title: p.parent }, pretty(p.parent));
     const detail = h("tr", { class: "detail-row", hidden: true }, h("td", {}), h("td", {}), h("td", { colspan: 9 }, projectDetail(p)));
-    const nameCell = h("td", { class: "name rowlink", onclick: () => (detail.hidden = !detail.hidden) },
+    const nameCell = h("td", { class: "name rowlink", style: { minWidth: "200px" }, onclick: () => (detail.hidden = !detail.hidden) },
       h("span", { class: "trunc", style: { color: "var(--accent)" } }, p.name.replace(/ Project$/, "")),
-      p.possible_copies.length ? h("span", { class: "status warning" }, h("span", { class: "dot" }), `${p.possible_copies.length} possible cop${p.possible_copies.length > 1 ? "ies" : "y"}`) : null);
+      p.possible_copies.length ? h("span", { class: "status warning" }, h("span", { class: "dot" }), `${p.possible_copies.length} possible cop${p.possible_copies.length > 1 ? "ies" : "y"}`) : null,
+      p.archivable ? h("span", { class: "chip", title: "Marked “Archive as broken”" }, "Broken") : null,
+      p.move_anyway ? h("span", { class: "chip", title: "Allowed to move although it uses outside files" }, "May move") : null,
+      cloudChip(p),
+      h("div", { style: { marginTop: "3px" } }, tagCell(p)));
     tbody.append(h("tr", { class: p.sets.length ? "has-sets" : "" },
       h("td", { class: "check" }, cb), h("td", { class: "check" }, starButton(p)), nameCell,
       h("td", { style: { maxWidth: "220px" } }, where),
@@ -1476,14 +1824,18 @@ VIEWS.music = async (root) => {
     data.template_problem ? h("div", { class: "warn" }, "Live's default template is missing (", pretty(data.template_problem),
       "), so new sets start empty. In Live, open a set you like and use File → Save Live Set As Default Set.") : "",
     data.tracks_rescan_needed ? h("div", { class: "note card", style: { marginBottom: "10px" } },
-      "Rescan once so Mac Cleaner reads each set's track names. That's how stems get matched to projects when their names differ.") : "",
+      "Rescan once so Mac Cleaner reads each set's track names and every audio file. That's how stems get matched to projects when their names differ, and how missing samples are found again.") : "",
     data.exports && data.exports.unmatched_groups.length ? h("div", { class: "note card", style: { marginBottom: "10px" } },
       `${data.exports.unmatched_groups.length} stem export${data.exports.unmatched_groups.length === 1 ? "" : "s"} didn't match a project. `,
       "Open their folders in the ", h("a", { href: "#plan" }, "Plan"), " tab to choose where they go.") : "",
+    checklistFilter === "icloud" ? "" : icloudNotice(data.icloud) || "",
+    filterBar(data.projects),
+    brokenCard(data),
     h("div", { class: "card", style: { marginBottom: "14px" } },
       h("div", { class: "toolbar" }, h("h2", { style: { margin: 0 } }, "Projects"),
         h("div", { class: "seg" }, [["all", "All"], ["organised", `Organised (${data.projects.filter((p) => checkScore(p.checklist) === 3).length})`],
-          ["almost", "Almost"], ["needs", "Needs work"]].map(([k, l]) =>
+          ["almost", "Almost"], ["needs", "Needs work"], ["broken", `Broken (${data.projects.filter((p) => p.archivable).length})`],
+          ["icloud", `Only in iCloud (${data.projects.filter((p) => p.cloud_only).length})`]].map(([k, l]) =>
           h("button", { class: checklistFilter === k ? "on" : "", onclick: () => { checklistFilter = k; route(); } }, l))),
         h("span", { class: "ink2" }, "Click a name for details. The last column is the suggested bucket.")),
       h("div", { style: { overflowX: "auto" } }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { class: "check" }), h("th", { class: "check" }), h("th", {}, "Project"), h("th", {}, "Location"),
@@ -1525,23 +1877,140 @@ function organisingDetail(p) {
   const fileLine = (path) => h("div", { class: "path" }, pretty(path), " ", h("button", { class: "btn small", onclick: () => reveal(path) }, "Show"));
   return h("div", { class: "card note", style: { margin: "6px 0" } },
     h("h3", { style: { margin: "0 0 6px" } }, "Getting it organised"),
-    h("div", {}, c.self_contained ? "✓ Samples: everything the sets use is inside the project."
+    h("div", {}, c.self_contained && c.status !== "ok" ? "✓ Samples: the newest set is self-contained, so it's safe to move. Older versions in the folder aren't collected; that doesn't stop it moving."
+      : c.self_contained ? "✓ Samples: everything the sets use is inside the project."
       : c.status === "external" ? "Samples: uses files outside the project. " + COLLECT_ALL
       : c.status === "missing" ? "Samples: some files are missing. Open the set in Live to find them." : "Samples: not checked yet. Rescan."),
+    c.self_contained ? null : h("div", { class: "toolbar", style: { marginTop: "4px" } }, archiveButton(p), moveAnywayToggle(p),
+      h("span", { class: "muted" }, "Until then, it never moves.")),
     h("div", { style: { marginTop: "6px" } },
       c.master === "in" ? "✓ Master: in Exports/Master." : c.master === "not-needed" ? "Master: not needed." :
         c.master === "elsewhere" ? "Master: found outside the project (it'll be filed into Exports/Master in a later version):" : "Master: none found.",
       " ", h("label", { class: "muted" }, flag, " Doesn't need a master")),
     (c.master === "in" ? c.masters_in : c.masters_elsewhere).map(fileLine),
-    h("div", { style: { marginTop: "6px" } }, p.stem_groups.length ? `Stems: ${p.stem_groups.length} export${p.stem_groups.length === 1 ? "" : "s"} found` : "Stems: none found."),
+    h("div", { style: { marginTop: "6px" } }, stemsLine(p.stem_groups)),
     p.stem_groups.map((g) => h("div", { class: "path" }, confidencePill(g.confidence), " ",
       h("b", {}, g.prefix), ` · ${g.count} files · ${fmt.size(g.bytes)} · ${agoText(g.first)} · `, pretty(g.folder),
       g.stem_prep ? h("span", { class: "chip", title: "Matched to a Stem Prep run record" }, "Stem Prep") : null,
+      g.received ? h("span", { class: "chip", title: "Stems that came from somewhere else (sent to you, or exported from another project), not ones you exported from this one. The Plan files them in Samples/Received Stems." }, "Received") : null,
+      g.copy_of ? h("span", { class: "chip", title: "Every file is also in " + pretty(g.copy_of) }, g.copy_checked ? "Copy" : "Likely a copy") : null,
       h("div", { class: "muted" }, g.why), " ", h("button", { class: "btn small", onclick: () => reveal(g.folder) }, "Show"))));
 }
 
+function stemsLine(groups) {
+  const mine = groups.filter((g) => !g.received).length, got = groups.length - mine;
+  if (!groups.length) return "Stems: none found.";
+  const bits = [mine ? `${mine} export${mine === 1 ? "" : "s"} found` : "none exported yet", got ? `${got} set${got === 1 ? "" : "s"} of stems from somewhere else` : null];
+  return "Stems: " + bits.filter(Boolean).join(", ") + ".";
+}
+
+// Files the last scan saw only in iCloud (Optimise Mac Storage removed the copy on this Mac).
+const KEEP_DOWNLOADED = "Keep Downloaded (here, or in Finder: right-click the folder → Keep Downloaded).";
+const inICloud = (path) => [HOME + ICLOUD_REL, HOME + "/Desktop", HOME + "/Documents"].some((b) => path.startsWith(b + "/"));
+// Keep Downloaded: the same setting as Finder's. A folder inside a kept folder is kept too.
+function keepButton(path, keptBy, after) {
+  const set = async (on) => {
+    const r = await post("/api/icloud/keep", { path, on });
+    if (!r.ok) return toast(r.error, 6000);
+    toast(on ? (r.confirmed ? `${path.split("/").pop()} is kept downloaded. macOS downloads anything missing by itself.`
+      : "Done, but macOS hasn't confirmed it yet. In Finder, right-click it: Keep Downloaded should be ticked.")
+      : `${path.split("/").pop()} is no longer kept downloaded.`, 6000);
+    (after || route)();
+  };
+  if (keptBy && keptBy !== path) return h("span", { class: "status good", title: `Because ${pretty(keptBy)} is kept downloaded` },
+    h("span", { class: "dot" }), "Kept downloaded");
+  if (keptBy === path) return h("span", {}, h("span", { class: "status good" }, h("span", { class: "dot" }), "Kept downloaded"), " ",
+    h("button", { class: "btn small", title: "macOS may remove its files from this Mac again when it needs space", onclick: (e) => { e.stopPropagation(); set(false); } }, "Stop keeping"));
+  return h("button", { class: "btn small", title: "Like Finder's right-click → Keep Downloaded: macOS downloads all of it and never removes it from this Mac",
+    onclick: (e) => { e.stopPropagation(); set(true); } }, "Keep Downloaded");
+}
+// Download now: fetch what's only in iCloud, once, in the background.
+const downloads = {
+  el: null, timer: null,
+  async start(paths, label) {
+    const r = await post("/api/icloud/download", { paths, label });
+    if (!r.ok) return toast(r.error, 6000);
+    if (!r.job.files) return toast(`Everything in ${label} is already on this Mac.`);
+    this.poll();
+  },
+  async poll() {
+    clearTimeout(this.timer);
+    let d;
+    try { d = await get("/api/icloud/jobs"); } catch (e) { return; }
+    const active = d.jobs.filter((j) => !j.finished);
+    const recent = d.jobs.filter((j) => j.finished && Date.now() / 1000 - j.finished < 8);
+    if (!this.el) { this.el = h("div", { class: "player downloads", role: "status", "aria-live": "polite" }); document.body.append(this.el); }
+    this.el.hidden = !active.length && !recent.length;
+    this.el.replaceChildren(...[...active, ...recent].map((j) => h("div", { class: "player-head" },
+      j.finished ? null : h("span", { class: "spinner", "aria-hidden": "true" }),
+      h("span", { class: "player-title" }, j.finished
+        ? `${j.cancelled ? "Stopped" : "Downloaded"} ${j.label}: ${j.done} of ${j.files} file${j.files === 1 ? "" : "s"}${j.errors.length ? `, ${j.errors.length} couldn't be downloaded (${j.errors[0]})` : ""}.`
+        : `Downloading ${j.label}: ${j.done} of ${j.files} files (${fmt.size(j.done_bytes)} of ${fmt.size(j.bytes)})`),
+      j.finished ? null : h("button", { class: "btn small", onclick: () => post("/api/icloud/cancel", { id: j.id }).then(() => this.poll()) }, "Stop"))));
+    if (active.length || recent.length) this.timer = setTimeout(() => this.poll(), active.length ? 1500 : 8000);
+  },
+};
+const downloadButton = (paths, label, bytes) => h("button", { class: "btn small", title: "Download it to this Mac now. macOS may remove it again later unless it's kept downloaded.",
+  onclick: (e) => { e.stopPropagation(); downloads.start(paths, label); } }, bytes ? `Download now (${fmt.size(bytes)})` : "Download now");
+function cloudChip(p) {
+  const c = p.cloud_only;
+  if (!c) return null;
+  return h("span", { class: "chip", title: `${c.files} file${c.files === 1 ? "" : "s"} (${fmt.size(c.bytes)}) only in iCloud: Live downloads them when you open the set, `
+    + "and offline they show as missing. " + KEEP_DOWNLOADED }, "☁︎ iCloud only");
+}
+function icloudNotice(ic) {
+  if (!ic || !ic.projects) return null;
+  const imp = (ic.important || []).map((n) => n.replace(/ Project$/, ""));
+  const n = ic.projects;
+  return h("div", { class: "note card", style: { marginBottom: "14px" } },
+    ic.optimise ? [h("b", {}, "Optimise Mac Storage is on. "), "When this Mac wants space, macOS removes the copy on this Mac of iCloud files you haven't opened lately. "] : "",
+    `${n} Ableton project${n === 1 ? " has" : "s have"} files that are only in iCloud right now`,
+    imp.length ? `, including ${imp.length === 1 ? "the starred project" : "starred"} ${imp.slice(0, 4).join(", ")}${imp.length > 4 ? ` and ${imp.length - 4} more` : ""}` : "",
+    ". Live downloads them when you open a set, and without internet they show up as missing. ",
+    ic.optimise && ic.disk && ic.disk.low ? h("b", {}, `Only ${fmt.size(ic.disk.free)} is free, so macOS will remove more. `) : "",
+    "To keep a project on your Mac for good, open it and click ", KEEP_DOWNLOADED, " ",
+    h("button", { class: "btn small", onclick: () => { checklistFilter = "icloud"; route(); } }, "Show which projects"), " ",
+    downloadButton(ic.project_paths || [], `${n} project${n === 1 ? "" : "s"}`));
+}
+// Overview: where the files only in iCloud are, with Keep Downloaded and Download now for each place.
+function icloudCard(ic) {
+  if (!ic || !ic.cloud_only_files) return null;
+  const n = ic.projects || 0;
+  const names = (ic.kept || []).map((k) => k.split("/").pop());
+  return h("div", { class: "card", style: { marginBottom: "14px" } },
+    h("h2", {}, "Only in iCloud"),
+    h("p", {}, ic.optimise ? [h("b", {}, "Optimise Mac Storage is on: "), "when this Mac wants space, macOS removes the copy on this Mac of iCloud files you haven't opened lately. "] : "",
+      h("b", {}, fmt.size(ic.cloud_only_bytes)), ` of your files (${fmt.count(ic.cloud_only_files)}) ${ic.cloud_only_files === 1 ? "isn't" : "aren't"} on this Mac right now. `,
+      "Opening one downloads it first, and without internet it won't open.",
+      ic.optimise && ic.disk && ic.disk.low ? h("b", {}, ` Only ${fmt.size(ic.disk.free)} is free, so macOS will remove more.`) : ""),
+    names.length ? h("p", {}, h("span", { class: "status good" }, h("span", { class: "dot" }), "Kept downloaded: "), names.join(", "),
+      h("span", { class: "muted" }, ". macOS never removes these.")) : null,
+    h("table", {}, h("tbody", {}, (ic.areas || []).map((a) => h("tr", {},
+      h("td", { class: "name" }, h("span", { class: "trunc", title: a.path }, pretty(a.path)),
+        a.music ? h("span", { class: "chip", title: "Has audio or Ableton files" }, "audio") : null),
+      h("td", { class: "num ink2" }, `${fmt.count(a.files)} file${a.files === 1 ? "" : "s"}`),
+      h("td", { class: "num" }, fmt.size(a.bytes)),
+      h("td", { style: { width: "1%", whiteSpace: "nowrap" } }, downloadButton([a.path], a.path.split("/").pop()), " ",
+        keepButton(a.path, a.kept_by), " ", h("button", { class: "btn small", onclick: () => reveal(a.path) }, "Show")))))),
+    n ? h("p", {}, `${n} Ableton project${n === 1 ? " has" : "s have"} files among them. `,
+      h("button", { class: "btn small", onclick: () => { checklistFilter = "icloud"; openTab("projects"); } }, "Show which projects")) : null,
+    h("p", { class: "muted" }, "Keep Downloaded is the same as Finder's right-click → Keep Downloaded: macOS downloads the folder and never removes it. ",
+      "Download now fetches the files once; macOS may remove them again later. As of the last scan."));
+}
+
+function cloudDetail(p) {
+  const c = p.cloud_only;
+  if (!c) return inICloud(p.path) || p.kept_by ? h("div", {}, "On this Mac: ", keepButton(p.path, p.kept_by),
+    p.kept_by ? null : h("span", { class: "muted" }, " Optimise Mac Storage may remove its files from this Mac when space runs low.")) : null;
+  return h("div", { class: "card note" }, h("b", {}, `${c.files} file${c.files === 1 ? "" : "s"} in this project (${fmt.size(c.bytes)}) ${c.files === 1 ? "is" : "are"} only in iCloud`),
+    c.sets ? `, including ${c.sets} set${c.sets === 1 ? "" : "s"}` : "", ". ",
+    "Live downloads them when you open the set, which takes a while, and without internet they show up as missing. ",
+    h("div", { class: "toolbar", style: { marginTop: "6px" } }, downloadButton([p.path], projName(p), c.bytes), keepButton(p.path, p.kept_by),
+      h("span", { class: "muted" }, "Keep Downloaded keeps it on this Mac for good.")));
+}
+
 function projectDetail(p) {
-  return h("div", { class: "stack" }, organisingDetail(p),
+  return h("div", { class: "stack" }, cloudDetail(p), organisingDetail(p),
     h("div", { class: "kv" },
       h("span", { class: "muted" }, "Path"), h("span", {}, pretty(p.path), " ", h("button", { class: "btn small", onclick: () => reveal(p.path) }, "Show")),
       h("span", { class: "muted" }, "Files"), h("span", {}, `${fmt.count(p.files)} · ${fmt.size(p.alloc)} on this Mac (${fmt.size(p.size)} total)`),
@@ -1552,6 +2021,37 @@ function projectDetail(p) {
         s.error ? ` — ${s.error}` : ` — ${s.refs} files: ${s.in_project} in project, ${s.packs} from Packs, ${s.external} elsewhere, ${s.missing} missing`),
       (s.examples.external || []).length ? h("div", { class: "path" }, "Elsewhere: ", s.examples.external.map(pretty).join(" · ")) : null,
       missingList(s))));
+}
+
+// Apps that remember where files are: their files are kept where they are.
+function appsCard() {
+  const box = h("div", { class: "card", style: { marginBottom: "14px" } }, h("p", { class: "muted" }, "Checking rekordbox and Final Cut…"));
+  get("/api/links").then((st) => {
+    const rb = st.rekordbox || {};
+    const pathIn = h("input", { type: "text", id: "rb-xml", value: rb.path ? pretty(rb.path) : "", placeholder: "~/Documents/rekordbox.xml",
+      style: { flex: "1", minWidth: "240px" }, "aria-label": "rekordbox collection file" });
+    const save = async (value) => {
+      const r = await post("/api/links", { rekordbox_xml: value.replace(/^iCloud Drive/, HOME + ICLOUD_REL) });
+      if (!r.ok) return toast(r.error);
+      toast(value ? `rekordbox: ${r.rekordbox.tracks} tracks will stay where they are.` : "rekordbox collection removed.");
+      route();
+    };
+    const fc = st.final_cut || {};
+    box.replaceChildren(h("h2", {}, "Apps that keep track of files"),
+      h("p", { class: "ink2" }, "rekordbox and Final Cut remember exactly where your files are. Mac Cleaner never moves or trashes the files they use, the same way it protects files your Live sets use."),
+      h("h3", { style: { margin: "10px 0 4px" } }, "rekordbox"),
+      rb.set && !rb.error ? h("p", {}, `${fmt.count(rb.tracks)} tracks protected, from a collection exported ${Math.floor(rb.exported_days)} days ago.`,
+        rb.stale ? h("span", { class: "status warning" }, h("span", { class: "dot" }), " Export it again so new tracks are included") : null) : null,
+      rb.error ? h("div", { class: "warn" }, rb.error) : null,
+      !rb.set ? h("p", { class: "ink2" }, "In rekordbox choose ", h("b", {}, "File → Export Collection in xml format"),
+        ", save it somewhere like Documents, then enter that file here. Export it again now and then so new tracks are included.") : null,
+      h("div", { class: "toolbar" }, pathIn, h("button", { class: "btn primary", onclick: () => save(pathIn.value.trim()) }, "Use this file"),
+        rb.set ? h("button", { class: "btn", onclick: () => save("") }, "Remove") : null),
+      h("h3", { style: { margin: "12px 0 4px" } }, "Final Cut Pro"),
+      h("p", {}, fc.links ? `${fmt.count(fc.links)} files linked from ${fc.libraries} librar${fc.libraries === 1 ? "y" : "ies"} (${fc.library_names.join(", ")}) are protected.`
+        : "No Final Cut library links to files outside itself (or there was no scan yet)."));
+  }).catch((e) => box.replaceChildren(h("div", { class: "warn" }, e.message)));
+  return box;
 }
 
 // ------------------------------------------------------------------- rules
@@ -1604,6 +2104,7 @@ VIEWS.rules = async (root) => {
       h("table", { class: "rules" }, h("tbody", {}, rows)),
       h("p", { class: "ink2" }, `Desktop counts as your active workspace: its items are left alone until untouched for ${cfg.stale_days} days. `,
         "Anything an Ableton set or preset uses is always kept where it is, whatever the rules say.")),
+    appsCard(),
     h("details", { class: "card" },
       h("summary", {}, "Advanced: edit the rules as text"),
       h("p", { class: "ink2" }, "Destinations can use {cloud} {ableton} {year} {month} {category}. ",

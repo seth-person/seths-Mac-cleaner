@@ -144,7 +144,7 @@ def mark_used_by_sets(data: dict, con, cfg: dict | None = None) -> None:
         return
     from .purge import dupe_plan
     from . import exports
-    used = safety.UsedIndex(con)
+    used = safety.UsedIndex(con, cfg)
     dupes = dupe_plan(con, cfg or config.load_config(), used)
     stems = exports.index(con)
     for ib in data["inboxes"]:
@@ -152,16 +152,18 @@ def mark_used_by_sets(data: dict, con, cfg: dict | None = None) -> None:
             users = used.users(item["path"])
             if users:
                 item["used_by"] = users
-                item["suggestion"] = {"rule": "Used by Ableton", "action": "keep", "auto": False,
-                                      "reason": ableton.keep_advice(users[0])}
+                apps = [u for u in users if not u.startswith("/")]
+                item["used_by_text"] = safety.describe_users(users)
+                item["suggestion"] = {"rule": "Used by " + ("another app" if apps else "Ableton"), "action": "keep",
+                                      "auto": False, "reason": ableton.keep_advice(apps[0] if apps else users[0])}
                 continue
             g = stems.group_for_folder(item["path"]) if item["is_dir"] else None
             if g and g["project"]:
-                item["stems"] = {"project": g["project"], "count": len(g["files"])}
+                item["stems"] = {"project": g["project"], "count": len(g["files"]), "received": g.get("received", False)}
+                what = "stems you were sent" if g.get("received") else "stems"
                 item["suggestion"] = {"rule": "Stems", "action": "keep", "auto": False,
-                                      "reason": f"stems for {os.path.basename(g['project'])} ({len(g['files'])} files). "
-                                                "The Plan tab shows where they'll be filed; filing stems into "
-                                                "projects comes in a later version"}
+                                      "reason": f"{what} for {os.path.basename(g['project'])} ({len(g['files'])} files). "
+                                                "Use the Plan tab to file them into the project"}
                 continue
             d = dupes.get(item["path"])
             if d and d["trashable"]:

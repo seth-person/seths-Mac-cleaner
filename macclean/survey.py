@@ -52,7 +52,7 @@ def build(con, cfg: dict) -> str:
             for c in con.execute("SELECT * FROM dirs WHERE parent=? ORDER BY size DESC LIMIT 25", (path,)):
                 if c["name"].startswith("."):
                     continue
-                tag = " [Ableton project]" if c["kind"] == "ableton-project" else ""
+                tag = " [Ableton project]" if c["kind"] == "ableton-project" and c["name"].casefold() != "user library" else ""
                 w("  " * depth + f"- {c['name']}/ — {human(c['size'])}, {c['files']:,} files{tag}")
                 if depth < 2 and c["kind"] == "dir":
                     tree(c["path"], depth + 1)

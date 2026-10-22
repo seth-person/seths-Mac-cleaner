@@ -31,8 +31,10 @@ _PACKAGE_CATEGORY = {
 }
 _SYSTEM_ROOTS = {"/System", "/usr", "/bin", "/sbin", "/private", "/Library", "/opt", "/cores"}
 # Sets, presets/racks (checked for what they load) and .asd files are always recorded.
-_ALWAYS_STORE_EXT = {".als", ".asd", ".adg", ".adv", ".alc", ".agr"}
-INDEX_VERSION = 3  # 2: presets and racks are part of the "used by" index; 3: track names
+# Audio and Max devices are recorded whatever their size, so missing samples can be found by name.
+_ALWAYS_STORE_EXT = {".als", ".asd", ".adg", ".adv", ".alc", ".agr", ".amxd",
+                     ".wav", ".wave", ".aif", ".aiff", ".aifc", ".flac", ".mp3", ".m4a", ".ogg", ".caf"}
+INDEX_VERSION = 4  # 2: presets and racks in the "used by" index; 3: track names; 4: every audio file
 
 
 class ScanCancelled(Exception):
@@ -159,7 +161,8 @@ class Scanner:
                 if stat.S_ISDIR(mode):
                     if entry.path in self.exclude:
                         continue
-                    if entry.name == "Ableton Project Info":
+                    if entry.name == "Ableton Project Info" \
+                            and os.path.basename(path).casefold() != classify.USER_LIBRARY_NAME:
                         kind = "ableton-project" if kind == "dir" else kind
                     child_zone = zone if inner_pkg else self._zone_for(entry.path, zone)
                     s, a, n, m = self._walk(entry.path, depth + 1, child_zone, inner_pkg, in_inbox)

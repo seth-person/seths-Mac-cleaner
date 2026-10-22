@@ -1,8 +1,11 @@
-"""Projects you've marked as important, kept in ~/.macclean/marks.json.
+"""Projects you've marked as important, and your tags, kept in ~/.macclean/marks.json.
 
 Marks are keyed by the project's folder path. When Mac Cleaner moves a
 project the mark moves with it; if you move it yourself in Finder, the mark
-is matched again by folder name.
+is matched again by folder name. Nothing is written into the projects.
+
+Tags have a name (unique, ignoring case), a kind (e.g. "Album / EP", "Type")
+and a colour number. A project's tags are listed by name.
 """
 from __future__ import annotations
 
@@ -68,6 +71,14 @@ def moved(src: str, dst: str) -> None:
                 v["name"] = os.path.basename(new)
                 data["important"][new] = v
                 changed = True
+        tagged = data.get("tags") or {}
+        for k in list(tagged):
+            if k == src or k.startswith(src + os.sep):
+                v = tagged.pop(k)
+                new = dst + k[len(src):]
+                v["name"] = os.path.basename(new)
+                tagged[new] = v
+                changed = True
         for flags in (data.get("flags") or {}).values():
             for k in list(flags):
                 if k == src or k.startswith(src + os.sep):
@@ -91,3 +102,141 @@ def set_flag(path: str, flag: str, on: bool) -> None:
 
 def flagged(flag: str) -> set:
     return set((load().get("flags") or {}).get(flag) or {})
+
+
+# --- tags ----------------------------------------------------------------------
+TAG_KINDS = ["Album / EP", "Type", "Status", "Collab", "Other"]
+MAX_TAG_LEN = 40
+
+
+def _clean_tag(name) -> str:
+    name = " ".join(str(name or "").split())
+    if not name:
+        raise ValueError("Give the tag a name")
+    if len(name) > MAX_TAG_LEN:
+        raise ValueError(f"Tag names can be up to {MAX_TAG_LEN} characters")
+    return name
+
+
+def _find(defs: list, name: str) -> dict | None:
+    key = name.casefold()
+    return next((d for d in defs if d["name"].casefold() == key), None)
+
+
+def tag_defs() -> list:
+    return list(load().get("tag_defs") or [])
+
+
+def _new_def(defs: list, name: str, kind: str | None = None, color: int | None = None) -> dict:
+    d = {"name": name, "kind": " ".join(str(kind or "Other").split()) or "Other",
+         "color": int(color) if color is not None else (len(defs) % 8) + 1}
+    defs.append(d)
+    return d
+
+
+def create_tag(name: str, kind: str | None = None, color: int | None = None) -> dict:
+    name = _clean_tag(name)
+    with _lock:
+        data = load()
+        defs = data.setdefault("tag_defs", [])
+        if _find(defs, name):
+            raise ValueError(f"There's already a tag called “{name}”")
+        d = _new_def(defs, name, kind, color)
+        _save(data)
+        return d
+
+
+def update_tag(name: str, new_name: str | None = None, kind: str | None = None, color: int | None = None) -> dict:
+    """Rename (everywhere it's used), change its kind or colour."""
+    with _lock:
+        data = load()
+        defs = data.setdefault("tag_defs", [])
+        d = _find(defs, name)
+        if not d:
+            raise ValueError(f"No tag called “{name}”")
+        if new_name is not None:
+            new_name = _clean_tag(new_name)
+            clash = _find(defs, new_name)
+            if clash and clash is not d:
+                raise ValueError(f"There's already a tag called “{new_name}”")
+            old = d["name"]
+            d["name"] = new_name
+            for v in (data.get("tags") or {}).values():
+                v["tags"] = [new_name if t.casefold() == old.casefold() else t for t in v.get("tags", [])]
+        if kind is not None:
+            d["kind"] = " ".join(str(kind).split()) or "Other"
+        if color is not None:
+            d["color"] = max(1, min(8, int(color)))
+        _save(data)
+        return d
+
+
+def delete_tag(name: str) -> None:
+    """Remove a tag from the list and from every project (the projects aren't touched)."""
+    with _lock:
+        data = load()
+        key = name.casefold()
+        data["tag_defs"] = [d for d in data.get("tag_defs") or [] if d["name"].casefold() != key]
+        tagged = data.get("tags") or {}
+        for k in list(tagged):
+            tagged[k]["tags"] = [t for t in tagged[k].get("tags", []) if t.casefold() != key]
+            if not tagged[k]["tags"]:
+                tagged.pop(k)
+        _save(data)
+
+
+def _resolve(defs: list, names) -> list:
+    """Known tag names in their stored spelling; unknown ones are created (kind Other)."""
+    out = []
+    for n in names or []:
+        n = _clean_tag(n)
+        d = _find(defs, n) or _new_def(defs, n)
+        if d["name"] not in out:
+            out.append(d["name"])
+    return out
+
+
+def set_tags(path: str, names: list) -> list:
+    """Replace a project's tags."""
+    with _lock:
+        data = load()
+        defs = data.setdefault("tag_defs", [])
+        tags = _resolve(defs, names)
+        tagged = data.setdefault("tags", {})
+        if tags:
+            tagged[path] = {"name": os.path.basename(path), "tags": tags}
+        else:
+            tagged.pop(path, None)
+        _save(data)
+        return tags
+
+
+def add_tags(paths: list, names: list) -> list:
+    """Add tags to several projects at once (their other tags stay)."""
+    with _lock:
+        data = load()
+        defs = data.setdefault("tag_defs", [])
+        tags = _resolve(defs, names)
+        tagged = data.setdefault("tags", {})
+        for p in paths:
+            cur = tagged.setdefault(p, {"name": os.path.basename(p), "tags": []})
+            cur["tags"] += [t for t in tags if t not in cur["tags"]]
+        _save(data)
+        return tags
+
+
+def tags_lookup() -> tuple:
+    """(by_path, by_folder_name) so projects moved in Finder keep their tags."""
+    tagged = load().get("tags") or {}
+    by_path = {k: v.get("tags", []) for k, v in tagged.items()}
+    by_name = {}
+    for k, v in tagged.items():
+        by_name.setdefault(v.get("name") or os.path.basename(k), v.get("tags", []))
+    return by_path, by_name
+
+
+def tags_for(path: str, lookup: tuple) -> list:
+    by_path, by_name = lookup
+    if path in by_path:
+        return list(by_path[path])
+    return list(by_name.get(os.path.basename(path), []))

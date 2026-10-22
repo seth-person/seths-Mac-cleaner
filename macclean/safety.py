@@ -64,20 +64,28 @@ def used_by_sets(con) -> dict:
 
 
 class UsedIndex:
-    """Which files and folders Ableton sets depend on. Build once per request:
-    looking up a file or a folder is then a single dictionary hit."""
+    """Which files and folders Ableton sets depend on, plus what rekordbox and
+    Final Cut libraries keep track of (see links.py). Build once per request:
+    looking up a file or a folder is then a single dictionary hit. Users are set
+    paths, or a name like "rekordbox" for another app."""
 
-    def __init__(self, con):
-        self.files = {}    # norm(file) -> set paths using it
-        self.folders = {}  # norm(folder) -> set paths using something inside it
+    def __init__(self, con, cfg: dict | None = None):
+        self.files = {}    # norm(file) -> set paths (or app names) using it
+        self.folders = {}  # norm(folder) -> set paths (or app names) using something inside it
         if con is None:
             return
-        for r in con.execute("SELECT ref_path, set_path FROM ableton_refs"):
-            n = norm(r["ref_path"])
-            self.files.setdefault(n, set()).add(r["set_path"])
+        pairs = [(r["ref_path"], r["set_path"]) for r in con.execute("SELECT ref_path, set_path FROM ableton_refs")]
+        try:
+            from . import links
+            pairs += list(links.protected(con, cfg).items())
+        except Exception:  # an unreadable export must never stop the Ableton protection
+            pass
+        for path, user in pairs:
+            n = norm(path)
+            self.files.setdefault(n, set()).add(user)
             d = os.path.dirname(n)
             while d and d != os.path.dirname(d):
-                self.folders.setdefault(d, set()).add(r["set_path"])
+                self.folders.setdefault(d, set()).add(user)
                 d = os.path.dirname(d)
 
     def users(self, path: str) -> list:
@@ -85,7 +93,15 @@ class UsedIndex:
         folder's own sets don't count: they move or go with it.)"""
         n = norm(path)
         sets = self.files.get(n, set()) | self.folders.get(n, set())
-        return sorted(s for s in sets if not norm(s).startswith(n + "/"))
+        return sorted(s for s in sets if not s.startswith("/") or not norm(s).startswith(n + "/"))
+
+
+def describe_users(users: list) -> str:
+    """'2 Ableton sets elsewhere', 'rekordbox', 'rekordbox and 1 Ableton set elsewhere'..."""
+    apps = sorted({u for u in users if not u.startswith("/")})
+    sets = [u for u in users if u.startswith("/")]
+    bits = apps + ([f"{len(sets)} Ableton set{'s' if len(sets) != 1 else ''} elsewhere"] if sets else [])
+    return " and ".join(bits)
 
 
 def project_dirs(con) -> list:
@@ -131,6 +147,7 @@ def protected_reason(path: str, cfg: dict) -> str | None:
         lib_paths = config.library_paths(cfg)
         tops.update(os.path.realpath(lib_paths[k]) for k in ("root", "projects", "releases", "work", "samples"))
         tops.update(os.path.realpath(p) for p in lib_paths["statuses"].values())
+    tops.add(os.path.realpath(config.library_paths(cfg)["broken"]))
     if real in tops:
         return "is a main folder"
     if parent == lib:
@@ -178,8 +195,10 @@ def preflight(index: UsedIndex, path: str, action: str, scanned: dict | None = N
     users = index.users(path)
     if users:
         verb = "moving" if action == "move" else "trashing"
-        return (f"{os.path.basename(users[0])} uses {'it' if os.path.isfile(path) else 'files in it'}; "
-                f"{verb} it would break that set")
+        what = "it" if os.path.isfile(path) else "files in it"
+        if not users[0].startswith("/"):
+            return f"{users[0]} uses {what}; {verb} it would make {what} go missing there"
+        return f"{os.path.basename(users[0])} uses {what}; {verb} it would break that set"
     if action != "move" and scanned and os.path.isfile(path):
         try:
             st = os.stat(path)
@@ -294,3 +313,68 @@ def premove_problem(src: str, dest_dir: str, cfg: dict) -> str | None:
         return (f"{name} has files that are only in iCloud. In Finder, right-click it and choose "
                 "Download Now, wait for it to finish, then try again")
     return None
+
+
+PROJECT_FLAGS_ALLOWING_MOVE = ("archive_broken", "move_anyway")
+
+
+def project_move_problem(src: str) -> str | None:
+    """A project (or a folder holding projects, or a loose set) whose newest set uses
+    files outside its folder, or misses some, only moves when you've marked it:
+    "archive as broken" or "allow moving anyway". Older versions of the set in the same
+    folder don't count: moving the folder doesn't make them any worse. Checked by
+    reading the sets right now, not from the scan."""
+    from . import ableton, live_prefs, marks
+    if not (os.path.isdir(src) and not os.path.islink(src)) and not src.lower().endswith(".als"):
+        return None
+    sets = ableton._sets_under(src)
+    if not sets:
+        return None
+    allowed = set()
+    for flag in PROJECT_FLAGS_ALLOWING_MOVE:
+        allowed |= {norm(p) for p in marks.flagged(flag)}
+    newest = {}  # project (or loose set) -> its most recently saved set
+    for s in sets:
+        proj = ableton._project_dir_of(s)
+        key = proj or s
+        try:
+            mtime = os.lstat(s).st_mtime
+        except OSError:
+            continue
+        if key not in newest or mtime > newest[key][1]:
+            newest[key] = (s, mtime, proj)
+    packs = None
+    bad = {}  # project (or loose set) -> [external, missing, unreadable]
+    for key, (s, _, proj) in newest.items():
+        if norm(key) in allowed:
+            continue
+        tally = bad.setdefault(key, [0, 0, 0])
+        if cloud_only(s):
+            tally[2] += 1
+            continue
+        if packs is None:
+            packs = live_prefs.installed_packs()
+        try:
+            res = ableton.check_set(s, proj, packs)
+        except Exception:
+            tally[2] += 1
+            continue
+        tally[0] += res["external"] - res.get("external_stable", 0)  # User Library / Splice files stay put
+        tally[1] += res["missing"]
+    bad = {k: v for k, v in bad.items() if any(v)}
+    if not bad:
+        return None
+    key, (ext, miss, unread) = next(iter(bad.items()))
+    name = os.path.basename(key)
+    if name.endswith(" Project"):
+        name = name[: -len(" Project")]
+    bits = []
+    if ext:
+        bits.append(f"uses {ext} file{'s' if ext != 1 else ''} outside its folder")
+    if miss:
+        bits.append(f"has {miss} missing file{'s' if miss != 1 else ''}")
+    if unread:
+        bits.append(f"has {unread} set{'s' if unread != 1 else ''} that couldn't be read")
+    more = f" (and {len(bad) - 1} more project{'s' if len(bad) > 2 else ''} in it)" if len(bad) > 1 else ""
+    return (f"{name}'s newest set {' and '.join(bits)}{more}, so it stays where it is. Collect All and Save in Live first, "
+            "or in Mac Cleaner mark it “Archive as broken” or “Allow moving anyway”")

@@ -27,10 +27,18 @@ else
 fi
 APP="$APPS/$APP_NAME"
 
-if [ "${1:-}" = "--uninstall" ]; then
+# MACCLEAN_SANDBOX=1 (the tests): install into the given folders only, and leave
+# this Mac's running Mac Cleaner and its Keychain sign-in alone.
+sandboxed() { [ "${MACCLEAN_SANDBOX:-}" = "1" ]; }
+quit_app() {
+  sandboxed && return 0
   have osascript && osascript -e 'tell application id "com.seth-person.mac-cleaner" to quit' >/dev/null 2>&1 || true
+}
+
+if [ "${1:-}" = "--uninstall" ]; then
+  quit_app
   rm -rf "$APP" "$HOME/Applications/$APP_NAME" "$SUPPORT"
-  have security && security delete-generic-password -s "$SERVICE" >/dev/null 2>&1 || true
+  sandboxed || { have security && security delete-generic-password -s "$SERVICE" >/dev/null 2>&1; } || true
   bold "Mac Cleaner removed. Your settings, scans and history are still in ~/.macclean."
   exit 0
 fi
@@ -52,7 +60,7 @@ if [ -n "${MACCLEAN_APP_ZIP:-}" ]; then
   zip="$MACCLEAN_APP_ZIP"   # for testing: install from a local build
 else
   token="${MACCLEAN_GITHUB_TOKEN:-}"
-  if [ -z "$token" ] && have security; then
+  if [ -z "$token" ] && have security && ! sandboxed; then
     token="$(security find-generic-password -s "$SERVICE" -w 2>/dev/null || true)"
   fi
   status="$(curl -s -o "$tmp/release.json" -w '%{http_code}' ${token:+-H "Authorization: Bearer $token"} \
@@ -94,7 +102,7 @@ mkdir -p "$tmp/unpacked" "$APPS"
 if have ditto; then ditto -x -k "$zip" "$tmp/unpacked"; else unzip -q "$zip" -d "$tmp/unpacked"; fi
 [ -d "$tmp/unpacked/$APP_NAME" ] || die "The download doesn't contain $APP_NAME."
 
-have osascript && osascript -e 'tell application id "com.seth-person.mac-cleaner" to quit' >/dev/null 2>&1 || true
+quit_app
 rm -rf "$APP"
 # The 0.2.0 browser-based version lived here; the app replaces it.
 legacy="$HOME/Applications/$APP_NAME/Contents/MacOS/Mac Cleaner"

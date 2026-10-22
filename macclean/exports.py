@@ -9,8 +9,15 @@
   Stem Prep    the run records the Stem Prep extension writes in Live's
                Extensions Data folder; a stem group that matches one is "sure"
   matching     a stem group belongs to a project when it's inside it, when its
-               name matches the project or one of its sets, or when most of its
-               file names are that project's track names
+               name matches the project or one of its sets, when most of its
+               file names are that project's track names, or when the project's
+               sets use the files as samples
+  received     stems that came from somewhere else (sent to you for a remix, say,
+               or exported from another project) rather than exported from it: the project's sets use them as samples, its tracks are
+               named after the files (what Live does when you drag them in), or
+               they're older than the project's first set
+  copies       a stem group whose every file (same name, same size) is also in
+               a folder inside a project is a copy of stems already filed there
 """
 from __future__ import annotations
 
@@ -29,6 +36,8 @@ MIN_STEMS = 3
 MIN_STEM_BYTES = 3_000_000  # a stem covers a whole section: loops and one-shots are smaller
 TRACK_MATCH = 0.6           # share of a group's track names that must match a project
 RECORD_WINDOW_S = 6 * 3600  # how long after a Stem Prep run its files may appear
+RECEIVED_DIR = os.path.join("Samples", "Received Stems")
+BEFORE_PROJECT_S = 86400    # stems this much older than a project's first set came from somewhere else
 INGREDIENT_DIRS = {"samples", "imported", "processed", "recorded", "freeze", "consolidate",
                    "reverse", "crop", "backup"}
 
@@ -117,7 +126,7 @@ def _project_of(path: str, projects: list) -> str | None:
 
 
 def find_stem_groups(con) -> list:
-    projects = [r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")]
+    projects = [r["path"] for r in con.execute("SELECT path FROM dirs WHERE " + db.PROJECTS)]
     by_parent = defaultdict(list)
     q = "SELECT path, parent, name, size, mtime, dataless FROM files WHERE ext IN (%s)" % ",".join("?" * len(STEM_EXTS))
     for r in con.execute(q, STEM_EXTS):
@@ -195,6 +204,10 @@ def _parse_iso(s: str) -> float | None:
     return float(t)
 
 
+def _file_stems(g: dict) -> list:
+    return [os.path.splitext(f["name"])[0] for f in g["files"]]
+
+
 def _overlap(a: list, b: set) -> float:
     a = {norm_name(x) for x in a if x}
     return len(a & b) / len(a) if a else 0.0
@@ -207,7 +220,7 @@ class Index:
 
     def __init__(self, con):
         from . import listen
-        self.projects = [r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")]
+        self.projects = [r["path"] for r in con.execute("SELECT path FROM dirs WHERE " + db.PROJECTS)]
         self.by_key = defaultdict(set)
         self.tracks = defaultdict(set)
         sets_of = defaultdict(list)
@@ -233,10 +246,26 @@ class Index:
                 t = norm_name(r["name"])
                 self.tracks[p].add(t)
                 self.by_track[t].add(p)
+        self.ref_names = defaultdict(set)  # file name -> projects whose sets use a file of that name
+        self.ref_paths = set()
+        for r in con.execute("SELECT set_path, ref_path FROM ableton_refs"):
+            self.ref_paths.add(safety.norm(r["ref_path"]))
+            p = set_project.get(r["set_path"])
+            if p:
+                self.ref_names[norm_name(os.path.basename(r["ref_path"]))].add(p)
+        self.first_save = {}  # project -> its oldest set's last save
+        for r in con.execute("SELECT s.project, MIN(MIN(COALESCE(NULLIF(f.birth, 0), f.mtime), f.mtime)) AS t "
+                             "FROM ableton_sets s JOIN files f ON f.path = s.path "
+                             "WHERE s.project IS NOT NULL GROUP BY s.project"):
+            if r["t"]:
+                self.first_save[r["project"]] = r["t"]
         self.groups = find_stem_groups(con)
         self.runs = stem_prep_runs()
         for g in self.groups:
             self._match(g)
+            self._received(g)
+        for g in self.groups:
+            self._find_copy(con, g)
 
     def project_for_name(self, name: str) -> str | None:
         from . import listen
@@ -263,11 +292,10 @@ class Index:
             for t in names:
                 for p in self.by_track.get(t, ()):
                     cands[p] += 1
-            for p, hits in cands.most_common(5):
-                s = hits / len(names)
-                if s > score:
-                    best, score = p, s
-        if by_name and (best == by_name or score < TRACK_MATCH):
+            top = cands.most_common(2)
+            if top and (len(top) == 1 or top[0][1] > top[1][1]):  # a tie on names like "Bass" means nothing
+                best, score = top[0][0], top[0][1] / len(names)
+        if by_name:  # track names are often generic; the export's name is the set's
             sure = bool(g["stem_prep"]) or best == by_name
             g["project"], g["confidence"] = by_name, "sure" if sure else "likely"
             g["why"] = "name matches the project" + (" and its track names" if best == by_name else "")
@@ -276,6 +304,73 @@ class Index:
             g["why"] = f"{round(score * 100)}% of the file names are this project's track names"
         if g["stem_prep"] and g["project"]:
             g["why"] += "; exported with Stem Prep"
+
+    def _received(self, g: dict) -> None:
+        """Mark stems you were sent rather than exported (see the top of this file)."""
+        g["received"] = False
+        names = [norm_name(f["name"]) for f in g["files"]]
+        used = Counter(p for n in names for p in self.ref_names.get(n, ()))
+        by_path = any(safety.norm(f["path"]) in self.ref_paths for f in g["files"])
+        user, hits = used.most_common(1)[0] if used else (None, 0)
+        if hits * 2 < len(names):
+            user = None
+        if not g["project"] and user:
+            g["project"], g["confidence"] = user, "sure" if by_path else "likely"
+            g["why"] = "this project's sets use them as samples"
+        p = g["project"]
+        if not p or g["stem_prep"]:
+            return
+        tracks = self.tracks.get(p, set())
+        if _overlap(g["tracks"], tracks) >= TRACK_MATCH:  # the project's track names: an export
+            return
+        named_like_files = _overlap(_file_stems(g), tracks) >= TRACK_MATCH
+        started = self.started(p)
+        if user == p or named_like_files:
+            why = "this project's sets use them as samples" if user == p else "the project's tracks are named after these files"
+        elif started and g["first"] < started - BEFORE_PROJECT_S:
+            days = int((started - g["first"]) // 86400)
+            why = f"made {days} day{'s' if days != 1 else ''} before the project was started"
+        else:
+            return
+        g["received"] = True
+        g["why"] = (g["why"] if why in g["why"] else (g["why"] + "; " if g["why"] else "") + why) + \
+            ", so they came from somewhere else (sent to you, or from another project)"
+
+    def started(self, project: str) -> float | None:
+        """When the project was started. Live rewrites a set's file on every save,
+        so a set's own dates are its last save; the project folder is made once.
+        Copying a folder can reset its date, so the oldest set counts too."""
+        times = [self.first_save.get(project)]
+        for d in (project, os.path.join(project, "Ableton Project Info")):
+            try:
+                times.append(getattr(os.stat(d), "st_birthtime", None))
+            except OSError:
+                pass
+        times = [t for t in times if t]
+        return min(times) if times else None
+
+    def _find_copy(self, con, g: dict) -> None:
+        """Note a folder inside a project that already has every one of these files."""
+        g["copy_of"], g["copy_project"], g["copy_pairs"] = None, None, []
+        if g["in_project"]:
+            return
+        mine = {(norm_name(f["name"]), f["size"]): f["path"] for f in g["files"]}
+        sizes = sorted({f["size"] for f in g["files"]})
+        here = safety.norm(g["folder"])
+        found = defaultdict(dict)  # folder -> {(name, size): path}
+        q = "SELECT path, parent, name, size FROM files WHERE size IN (%s)" % ",".join("?" * len(sizes))
+        for r in con.execute(q, sizes):
+            key = (norm_name(r["name"]), r["size"])
+            if key in mine and safety.norm(r["parent"]) != here:
+                found[r["parent"]][key] = r["path"]
+        for folder, hits in sorted(found.items(), key=lambda kv: -len(kv[1])):
+            if len(hits) < len(mine):
+                break
+            proj = _project_of(folder, self.projects)
+            if proj:
+                g["copy_of"], g["copy_project"] = folder, proj
+                g["copy_pairs"] = [(mine[k], hits[k]) for k in sorted(mine)]
+                return
 
     def groups_for(self, project: str) -> list:
         return [g for g in self.groups if g["project"] == project]
@@ -288,6 +383,33 @@ class Index:
 
 
 _cache = {}
+_hashes = {}
+CHECK_COPY_BYTES = 4_000_000_000  # don't read more than this to check one copy
+
+
+def copy_checked(g: dict) -> bool:
+    """Are the files byte-for-byte the same as the filed copy? Never reads a file
+    that's only in iCloud (that would download it)."""
+    from .dupes import _full_hash
+    pairs = g.get("copy_pairs") or []
+    if not pairs or sum(os.path.getsize(a) for a, _ in pairs if os.path.exists(a)) * 2 > CHECK_COPY_BYTES:
+        return False
+    for pair in pairs:
+        digests = []
+        for path in pair:
+            try:
+                st = os.stat(path)
+            except OSError:
+                return False
+            if getattr(st, "st_flags", 0) & safety.SF_DATALESS:
+                return False
+            key = (path, st.st_size, st.st_mtime)
+            if key not in _hashes:
+                _hashes[key] = _full_hash(path)
+            digests.append(_hashes[key])
+        if digests[0] is None or digests[0] != digests[1]:
+            return False
+    return True
 
 
 def index(con) -> Index:
@@ -305,6 +427,7 @@ def _summary(g: dict) -> dict:
     return {"folder": g["folder"], "prefix": g["prefix"], "count": len(g["files"]), "bytes": g["bytes"],
             "first": g["first"], "mix": g["mix"], "confidence": g["confidence"], "why": g["why"],
             "stem_prep": g["stem_prep"], "dataless": g["dataless"], "in_project": bool(g["in_project"]),
+            "received": g.get("received", False), "copy_of": g.get("copy_of"),
             "tracks": g["tracks"][:40]}
 
 
@@ -324,8 +447,9 @@ def attach_checklist(con, cfg: dict, projects: list) -> None:
             files_in[proj].append(r["path"])
     for p in projects:
         groups = idx.groups_for(p["path"])
-        inside = [g for g in groups if g["in_project"]]
-        elsewhere = [g for g in groups if not g["in_project"]]
+        mine = [g for g in groups if not g["received"]]
+        inside = [g for g in mine if g["in_project"]]
+        elsewhere = [g for g in mine if not g["in_project"]]
         masters_elsewhere = []
         for s in p["sets"]:
             for b in s.get("bounces") or []:
@@ -339,7 +463,7 @@ def attach_checklist(con, cfg: dict, projects: list) -> None:
         else:
             master = "elsewhere" if masters_elsewhere else "none"
         stems = "in" if inside else "elsewhere" if elsewhere else "none"
-        self_contained = p["status"] == "ok"
+        self_contained = bool(p.get("movable")) if "movable" in p else p["status"] == "ok"
         p["checklist"] = {
             "self_contained": self_contained, "status": p["status"],
             "master": master, "masters_in": files_in[p["path"]][:6], "masters_elsewhere": masters_elsewhere[:6],

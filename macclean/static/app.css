@@ -163,6 +163,7 @@ tr.sets-row td { padding-top: 0; }
 .player-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .player-title { flex: 1; min-width: 0; font-size: 12.5px; }
 #actionbar:not([hidden]) ~ .player { bottom: 76px; }
+body.playing .player.downloads { bottom: 104px; }
 body.playing #view { padding-bottom: 110px; }
 .spinner { display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px;
   border: 2px solid var(--border); border-top-color: var(--ink-2); border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -245,3 +246,15 @@ details > summary { cursor: pointer; color: var(--ink-2); }
 .legend-row .muted { flex-basis: 100%; }
 table.rules td { padding: 8px 6px; }
 table.rules tr.off td { opacity: .55; }
+
+/* tags */
+.chip.tag { cursor: pointer; color: var(--ink); }
+.chip.tag:hover { background: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); }
+.chip.tag.on { background: color-mix(in srgb, var(--accent) 24%, var(--surface-2)); outline: 1px solid var(--accent); }
+.tag-cell { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; max-width: 240px; }
+.tag-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 0 0 12px; }
+.tag-bar .group { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tag-bar .group > .muted { font-size: 11px; margin-right: 2px; }
+.tag-bar input[type=search] { min-width: 220px; }
+.tag-pick { display: grid; gap: 10px; max-height: 50vh; overflow: auto; }
+.tag-pick label { display: inline-flex; align-items: center; gap: 4px; margin: 0 10px 4px 0; }

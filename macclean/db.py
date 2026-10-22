@@ -37,6 +37,11 @@ CREATE INDEX IF NOT EXISTS ableton_tracks_set ON ableton_tracks(set_path);
 """
 
 
+# Ableton projects in the scan. Scans made before 0.10 marked the User Library as
+# one; it isn't, so it's left out here too.
+PROJECTS = "kind='ableton-project' AND lower(name) <> 'user library'"
+
+
 def connect(path: Path | None = None) -> sqlite3.Connection:
     con = sqlite3.connect(str(path or config.db_path()), check_same_thread=False)
     con.row_factory = sqlite3.Row

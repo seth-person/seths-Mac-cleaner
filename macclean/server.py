@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, ableton, actions, backup, config, db, exports, inbox, listen, live_prefs, marks, plan, purge, safety, survey, updater
+from . import __version__, ableton, actions, backup, config, datacopy, db, exports, icloud, inbox, links, listen, live_prefs, marks, missing, plan, purge, safety, survey, updater
 from .scanner import BackgroundScan
 
 STATIC = Path(__file__).parent / "static"
@@ -134,7 +134,7 @@ def post_ableton_recheck(body):
     con = _con()
     if not con:
         return {"ok": False, "error": "Scan first"}
-    known = con.execute("SELECT 1 FROM dirs WHERE kind='ableton-project' AND path=?", (body.get("project"),)).fetchone()
+    known = con.execute("SELECT 1 FROM dirs WHERE " + db.PROJECTS + " AND path=?", (body.get("project"),)).fetchone()
     if not known:
         return {"ok": False, "error": "That isn't a project from the last scan. Rescan to pick it up."}
     try:
@@ -184,17 +184,66 @@ def api_ableton(q):
     cfg = config.load_config()
     data = ableton.overview(con, cfg)
     data["exports"] = exports.attach_checklist(con, cfg, data["projects"])
-    data["tracks_rescan_needed"] = int(db.meta(con).get("index_version", 0) or 0) < 3
+    icloud.attach(con, data["projects"])
+    data["icloud"] = icloud.status(con, cfg, data["projects"])
+    data["tracks_rescan_needed"] = int(db.meta(con).get("index_version", 0) or 0) < 4
     data["live_pins"] = live_prefs.pinned_folders()
     data["template_problem"] = live_prefs.template_problem()
     return {"has_scan": True, **data}
 
 
+def post_ableton_tags(body):
+    """{path, tags} replaces one project's tags; {paths, add} adds tags to several."""
+    try:
+        if isinstance(body.get("paths"), list):
+            paths = [p for p in body["paths"] if isinstance(p, str) and os.path.isabs(p)]
+            if not paths:
+                return {"ok": False, "error": "Pick some projects"}
+            return {"ok": True, "tags": marks.add_tags(paths, body.get("add") or [])}
+        if not isinstance(body.get("path"), str) or not os.path.isabs(body["path"]):
+            return {"ok": False, "error": "Pick a project"}
+        return {"ok": True, "tags": marks.set_tags(body["path"], body.get("tags") or [])}
+    except (ValueError, TypeError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+def post_tag(body):
+    """Create, rename/recolour/re-kind, or delete a tag."""
+    try:
+        op = body.get("op")
+        if op == "create":
+            return {"ok": True, "tag": marks.create_tag(body.get("name"), body.get("kind"), body.get("color"))}
+        if op == "update":
+            return {"ok": True, "tag": marks.update_tag(body.get("name") or "", body.get("new_name"),
+                                                        body.get("kind"), body.get("color"))}
+        if op == "delete":
+            marks.delete_tag(body.get("name") or "")
+            return {"ok": True}
+        return {"ok": False, "error": "Unknown tag change"}
+    except (ValueError, TypeError) as e:
+        return {"ok": False, "error": str(e)}
+
+
 def post_ableton_flag(body):
-    if not isinstance(body.get("path"), str) or not os.path.isabs(body["path"]) or body.get("flag") not in ("no_master",):
+    """{path, flag, on}, or {paths, flag, on} for several projects at once."""
+    paths = body.get("paths") if isinstance(body.get("paths"), list) else [body.get("path")]
+    paths = [p for p in paths if isinstance(p, str) and os.path.isabs(p)]
+    if not paths or body.get("flag") not in ("no_master", "archive_broken", "move_anyway"):
         return {"ok": False, "error": "Pick a project"}
-    marks.set_flag(body["path"], body["flag"], bool(body.get("on")))
-    return {"ok": True}
+    for p in paths:
+        marks.set_flag(p, body["flag"], bool(body.get("on")))
+    return {"ok": True, "count": len(paths)}
+
+
+def api_ableton_missing(q):
+    con = _con()
+    project = (q.get("project") or [""])[0]
+    if not con or not con.execute("SELECT 1 FROM dirs WHERE " + db.PROJECTS + " AND path=?", (project,)).fetchone():
+        return {"error": "That isn't a project from the last scan. Rescan to pick it up."}
+    try:
+        return missing.find_for_project(con, project)
+    except FileNotFoundError as e:
+        return {"error": str(e)}
 
 
 def api_plan(q):
@@ -252,8 +301,67 @@ def api_history(q):
             "interrupted": actions.interrupted_batches()}
 
 
+def api_links(q):
+    return links.status(_con(), config.load_config())
+
+
+def post_links(body):
+    cfg = config.load_config()
+    path = str(body.get("rekordbox_xml") or "").strip()
+    if path:
+        p = os.path.expanduser(path)
+        if not os.path.isfile(p):
+            return {"ok": False, "error": "That file doesn't exist"}
+        try:
+            n = len(links.rekordbox_tracks(p))
+        except Exception as e:
+            return {"ok": False, "error": f"That doesn't look like a rekordbox collection export ({e})"}
+        if not n:
+            return {"ok": False, "error": "That file has no tracks in it. In rekordbox use File → Export Collection in xml format"}
+    cfg["rekordbox_xml"] = path
+    config.save_config(cfg)
+    return {"ok": True, **links.status(_con(), cfg)}
+
+
 def api_backup(q):
     return backup.status()
+
+
+def post_icloud_keep(body):
+    try:
+        return {"ok": True, **icloud.keep_downloaded(str(body.get("path") or ""), bool(body.get("on", True)))}
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+def post_icloud_download(body):
+    paths = body.get("paths") if isinstance(body.get("paths"), list) else [body.get("path")]
+    try:
+        return {"ok": True, "job": icloud.download(paths, str(body.get("label") or ""))}
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+def post_icloud_cancel(body):
+    return {"ok": icloud.cancel(int(body.get("id") or 0))}
+
+
+def api_icloud_jobs(q):
+    return {"jobs": icloud.jobs()}
+
+
+def api_data_copy(q):
+    cfg = config.load_config()
+    d = datacopy.folder(cfg)
+    return {"folder": str(d) if d else None, "offer": datacopy.offer(cfg)}
+
+
+def post_data_copy_restore(body):
+    try:
+        r = datacopy.restore(str(body.get("path") or ""))
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, **r}
 
 
 def post_undo_batch(body):
@@ -411,12 +519,16 @@ def post_reveal(body):
 GET = {"/api/status": api_status, "/api/overview": api_overview, "/api/tree": api_tree,
        "/api/inbox": api_inbox, "/api/destinations": api_destinations, "/api/purge": api_purge, "/api/ableton": api_ableton, "/api/ableton/set": api_ableton_set, "/api/packs": api_packs,
        "/api/config": api_config, "/api/history": api_history, "/api/survey": api_survey,
-       "/api/update": api_update, "/api/backup": api_backup, "/api/plan": api_plan, "/api/library": api_library}
+       "/api/update": api_update, "/api/backup": api_backup, "/api/links": api_links, "/api/ableton/missing": api_ableton_missing, "/api/plan": api_plan, "/api/library": api_library,
+       "/api/data-copy": api_data_copy, "/api/icloud/jobs": api_icloud_jobs}
 POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": post_apply,
         "/api/undo": post_undo, "/api/undo-batch": post_undo_batch, "/api/resume-batch": post_resume_batch, "/api/config": post_config, "/api/reveal": post_reveal, "/api/open-trash": post_open_trash,
         "/api/ableton/mark": post_ableton_mark, "/api/ableton/recheck": post_ableton_recheck,
         "/api/ableton/open": post_ableton_open, "/api/ableton/flag": post_ableton_flag,
-        "/api/plan/save": post_plan_save, "/api/plan/preview": post_plan_preview, "/api/library": post_library,
+        "/api/ableton/tags": post_ableton_tags, "/api/tag": post_tag,
+        "/api/plan/save": post_plan_save, "/api/plan/preview": post_plan_preview, "/api/library": post_library, "/api/links": post_links,
+        "/api/data-copy/restore": post_data_copy_restore, "/api/icloud/keep": post_icloud_keep,
+        "/api/icloud/download": post_icloud_download, "/api/icloud/cancel": post_icloud_cancel,
         "/api/update/install": post_update_install, "/api/update/rollback": post_update_rollback,
         "/api/update/token": post_update_token, "/api/update/migrate": post_update_migrate, "/api/quit": post_quit}
 
@@ -517,7 +629,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}")
-            return self._json(POST[u.path](body))
+            out = POST[u.path](body)
+            if u.path != "/api/data-copy/restore":
+                datacopy.mirror_soon()  # keep the copy in the library up to date
+            return self._json(out)
         except Exception as e:
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
@@ -565,6 +680,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         actions.recover()  # log anything a previous run moved but didn't get to log
     except OSError:
         pass
+    datacopy.mirror_soon()
     if os.environ.get("MACCLEAN_APP_BUNDLE"):
         _exit_with_parent()
         threading.Thread(target=updater.reset_permissions_if_new_identity, daemon=True).start()

@@ -14,6 +14,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import guard  # noqa: E402,F401  (first: keeps the tests off this Mac's apps and Keychain)
 
 import macclean  # noqa: E402
 from macclean import updater  # noqa: E402
@@ -68,7 +70,7 @@ class Sandbox(unittest.TestCase):
         self.apps = self.home / "Applications"
         self.env_backup = dict(os.environ)
         os.environ.update(HOME=str(self.home), MACCLEAN_INSTALL_ROOT=str(self.root),
-                          MACCLEAN_APPS_DIR=str(self.apps), MACCLEAN_NO_REOPEN="1")
+                          MACCLEAN_APPS_DIR=str(self.apps), MACCLEAN_NO_REOPEN="1", MACCLEAN_SANDBOX="1")
         os.environ.pop("MACCLEAN_APP_BUNDLE", None)
 
         # Source tree of the "new" release.
@@ -334,7 +336,7 @@ class InstallScriptTests(Sandbox):
         old.parent.mkdir(parents=True)
         old.write_text("#!/bin/bash\n")
         env = {**os.environ, "MACCLEAN_APP_ZIP": str(self.tmp / "dist" / f"Mac-Cleaner-{NEW}.zip"),
-               "MACCLEAN_NO_LAUNCH": "1"}
+               "MACCLEAN_NO_LAUNCH": "1", "MACCLEAN_SANDBOX": "1"}  # never quit the real app or touch the Keychain
         r = subprocess.run(["bash", str(REPO_ROOT / "install.sh")], env=env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         app = self.apps / "Mac Cleaner.app"
@@ -344,6 +346,23 @@ class InstallScriptTests(Sandbox):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(app.exists())
+
+    def test_sandboxed_install_leaves_the_real_app_and_keychain_alone(self):
+        # Stand-ins for osascript and security that only record being called.
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        calls = self.tmp / "calls.txt"
+        for tool in ("osascript", "security"):
+            (bin_dir / tool).write_text(f'#!/bin/bash\necho "{tool} $*" >> "{calls}"\n')
+            (bin_dir / tool).chmod(0o755)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+               "MACCLEAN_APP_ZIP": str(self.tmp / "dist" / f"Mac-Cleaner-{NEW}.zip"), "MACCLEAN_NO_LAUNCH": "1"}
+        for args in ([], ["--uninstall"]):
+            r = subprocess.run(["bash", str(REPO_ROOT / "install.sh"), *args], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        recorded = calls.read_text() if calls.exists() else ""
+        self.assertNotIn("quit", recorded)
+        self.assertNotIn("delete-generic-password", recorded)
 
 
 if __name__ == "__main__":

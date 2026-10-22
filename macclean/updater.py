@@ -484,7 +484,7 @@ else
   mv "$hold" "$previous"
   # Keep the backup out of Spotlight and Launchpad, so it isn't opened instead of the app.
   ls=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-  [ -x "$ls" ] && "$ls" -u "$previous" >/dev/null 2>&1
+  [ -n "$MACCLEAN_SANDBOX" ] || { [ -x "$ls" ] && "$ls" -u "$previous" >/dev/null 2>&1; }
   echo "ok" > "$result"
 fi
 [ -n "$MACCLEAN_NO_REOPEN" ] || open "$current"  # tests set this: nothing real to reopen
@@ -604,7 +604,7 @@ def migrate_to_app() -> dict:
             shutil.move(str(dest), str(_previous_app()))
     shutil.move(str(staged), str(dest))
     if sys.platform == "darwin":
-        if _previous_app().is_dir():
+        if _previous_app().is_dir() and not os.environ.get("MACCLEAN_SANDBOX"):
             subprocess.run([LSREGISTER, "-u", str(_previous_app())], capture_output=True)
         if not os.environ.get("MACCLEAN_NO_REOPEN"):
             subprocess.Popen(["open", str(dest)], start_new_session=True)

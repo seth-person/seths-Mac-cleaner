@@ -138,6 +138,9 @@ def move(src, dest_dir, cfg: dict | None = None, dry_run: bool = False, note: st
     if (os.path.realpath(dest_dir) + os.sep).startswith(os.path.realpath(src) + os.sep):
         raise ActionError("Can't move a folder into itself")
     _check_now(src, dest_dir, cfg)
+    problem = safety.project_move_problem(str(src))  # not on undo: putting things back always works
+    if problem:
+        raise ActionError(problem)
     target = _unique(dest_dir / src.name)
     if dry_run:
         return {"op": "move", "src": str(src), "dst": str(target), "dry_run": True}

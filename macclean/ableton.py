@@ -28,7 +28,7 @@ import zlib
 from collections import defaultdict
 from xml.parsers import expat
 
-from . import config
+from . import config, db, safety
 
 _IGNORED_CONTEXTS = {"SourceContext", "OriginalFileRef", "LastPresetRef", "PresetRef",
                      "BrowserContentPath", "OriginalFileSize"}
@@ -158,7 +158,10 @@ def is_preset(path: str) -> bool:
 
 
 def keep_advice(user: str) -> str:
-    """What to do about a file that `user` (a set or preset) still loads."""
+    """What to do about a file that `user` (a set or preset, or another app) still loads."""
+    if not user.startswith("/"):
+        return (f"{user[0].upper() + user[1:]} uses it and keeps track of where it is. Leave it here, "
+                "or move it from inside that app.")
     name = os.path.basename(user)
     if is_preset(user):
         return (f"The preset {name} loads it. Keep it here, or add the file to your User Library from Live's "
@@ -199,9 +202,11 @@ def check_set(path: str, project_dir: str | None, packs: list | None = None) -> 
     parsed = parse_set(path)
     base = project_dir or os.path.dirname(path)
     counts = {"in_project": 0, "packs": 0, "external": 0, "missing": 0}
+    stable = 0  # outside files in a sound library (User Library, Splice...): moving the project doesn't break them
     examples = {"external": [], "missing": [], "missing_detail": []}
     external = []
     used = []  # every file that resolved, wherever it is
+    missing_refs = []  # every reference that didn't
     pack_refs = {}  # pack name -> resolved?
     seen = set()
     for ref in parsed["refs"]:
@@ -229,15 +234,20 @@ def check_set(path: str, project_dir: str | None, packs: list | None = None) -> 
             counts["packs"] += 1
         elif found:
             counts["external"] += 1
+            if safety.in_sound_library(found):
+                stable += 1
             external.append(found)
             if len(examples["external"]) < 8:
                 examples["external"].append(found)
         else:
             counts["missing"] += 1
+            missing_refs.append({k: ref[k] for k in ("path", "rel", "where")})
             if len(examples["missing"]) < 8:
                 examples["missing"].append(shown)
                 examples["missing_detail"].append({k: ref[k] for k in ("path", "rel", "rel_type", "pack", "where", "xml")})
-    return {"version": parsed["version"], "refs": len(seen), **counts, "examples": examples,
+    examples["external_stable"] = stable
+    return {"version": parsed["version"], "refs": len(seen), **counts, "external_stable": stable, "examples": examples,
+            "missing_refs": missing_refs,
             "external_paths": external, "used_paths": used, "pack_refs": pack_refs, "tracks": parsed["tracks"]}
 
 
@@ -267,7 +277,7 @@ def analyse_sets(con, cfg, cancel=None, state=None) -> None:
     files, so they say nothing about whether you use it."""
     from . import live_prefs
     packs = live_prefs.installed_packs()
-    projects = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")}
+    projects = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE " + db.PROJECTS)}
     set_rows, preset_rows, ref_rows, pack_rows, track_rows = [], [], [], [], []
     exts = (SET_EXT,) + PRESET_EXTS
     query = "SELECT path, ext, dataless FROM files WHERE ext IN (%s)" % ",".join("?" * len(exts))
@@ -369,10 +379,10 @@ def overview(con, cfg) -> dict:
         d["version"] = d.pop("live_version")
         if d["project"]:
             sets_by_project[d["project"]].append(d)
-        else:
+        elif not safety.in_sound_library(d["path"]):  # templates and Pack demos aren't yours to file
             loose.append(d)
 
-    project_paths = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE kind='ableton-project'")}
+    project_paths = {r["path"] for r in con.execute("SELECT path FROM dirs WHERE " + db.PROJECTS)}
     sub = defaultdict(lambda: {"backup": 0, "asd": 0, "nbackups": 0, "newest": 0.0, "newest_set": None})
     set_mtime = {}
     for r in con.execute("SELECT path, alloc FROM dirs WHERE name='Backup'"):
@@ -400,10 +410,14 @@ def overview(con, cfg) -> dict:
         if proj and proj not in opened:
             opened[proj] = rank
     important = marks.important_lookup()
+    tag_lookup = marks.tags_lookup()
+    archivable = marks.flagged("archive_broken")
+    move_anyway = marks.flagged("move_anyway")
+    broken_dir = config.library_paths(cfg)["broken"]
 
     projects = []
     names = defaultdict(list)
-    for r in con.execute("SELECT * FROM dirs WHERE kind='ableton-project' ORDER BY mtime DESC"):
+    for r in con.execute("SELECT * FROM dirs WHERE " + db.PROJECTS + " ORDER BY mtime DESC"):
         p = r["path"]
         sets = sets_by_project.get(p, [])
         in_lib = _inside(p, root)
@@ -426,6 +440,10 @@ def overview(con, cfg) -> dict:
             "version": max((s["version"] for s in sets), default=""),
             "newest_set": extra.get("newest_set") or (sets[0]["path"] if sets else None),
             "opened_rank": opened.get(p), "important": marks.is_important(p, important),
+            "tags": marks.tags_for(p, tag_lookup),
+            "archivable": p in archivable, "move_anyway": p in move_anyway,
+            "movable": _newest_ok(sets, set_mtime),
+            "in_broken": _inside(p, broken_dir),
             "external_total": sum(s["external"] for s in sets), "missing_total": sum(s["missing"] for s in sets),
         }
         projects.append(item)
@@ -446,13 +464,15 @@ def overview(con, cfg) -> dict:
 
     return {
         "root": root, "buckets": buckets, "projects": projects, "loose_sets": loose,
+        "tag_defs": marks.tag_defs(), "tag_kinds": marks.TAG_KINDS, "broken_dir": broken_dir,
         "recent_from_live": bool(opened), "collect_steps": COLLECT_ALL_STEPS,
         "locations": sorted(({"location": k, **v} for k, v in locations.items()),
                             key=lambda x: -x["count"]),
         "totals": {
             "projects": len(projects),
             "outside_library": sum(1 for p in projects if not p["in_library"]),
-            "needs_collect": sum(1 for p in projects if p["status"] in ("external", "missing")),
+            "needs_collect": sum(1 for p in projects if p["status"] in ("external", "missing") and not p["archivable"]),
+            "movable_with_old_sets": sum(1 for p in projects if p["movable"] and p["status"] in ("external", "missing")),
             "backup_bytes": sum(p["backup_bytes"] for p in projects),
             "asd_bytes": sum(p["asd_bytes"] for p in projects),
             "alloc": sum(p["alloc"] or 0 for p in projects),
@@ -520,6 +540,25 @@ def _base_name(name: str) -> str:
                 n = n[: -len(suffix)].strip()
                 changed = True
     return n
+
+
+def stable_outside(s: dict) -> int:
+    """How many of a set's outside files are in a sound library (User Library, Splice...).
+    Scans before 0.10 didn't count them, so they're worked out from the examples then."""
+    ex = s.get("examples") or {}
+    if "external_stable" in ex:
+        return int(ex["external_stable"] or 0)
+    listed = ex.get("external") or []
+    return sum(1 for p in listed if safety.in_sound_library(p)) if len(listed) >= (s.get("external") or 0) else 0
+
+
+def _newest_ok(sets: list, set_mtime: dict) -> bool:
+    """The most recently saved set in the folder is readable, misses nothing, and uses
+    nothing outside the project except sound libraries, which stay where they are."""
+    if not sets:
+        return False
+    s = max(sets, key=lambda s: set_mtime.get(s["path"]) or 0)
+    return not s.get("error") and not s["missing"] and (s["external"] or 0) <= stable_outside(s)
 
 
 def _status(sets: list) -> str:

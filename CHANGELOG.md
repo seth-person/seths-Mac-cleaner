@@ -2,6 +2,38 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.10.0
+
+**Rescan once after updating.** Mac Cleaner now reads every audio file and each set's track names, which the new stems, songs and missing-sample features need.
+
+- **Tag your Ableton projects** to find them faster, e.g. by album, by type (Remix, Collab, Sketch) or anything else.
+  - **+ Tag** on any project (in Recent, Important and All projects) ticks tags on and off, or makes a new one.
+  - **Tag many at once**: in All projects, tick several projects and click **Add tag**. Handy for putting a whole album's projects under one tag.
+  - Each tag has a **kind** (Album / EP, Type, Status, Collab, or your own), so the filter groups them, and a colour.
+  - Tags are kept by Mac Cleaner, not written into your projects. They follow a project when Mac Cleaner moves it, and they're found again by folder name if you move it yourself in Finder.
+- **Find projects** with the new bar above Recent, Important and All projects. Search by project, set or tag name, and click tags to narrow the list. Choosing two tags shows only projects that have both; **Clear** shows everything again.
+- **New Tags tab** under Ableton: rename a tag (it's renamed everywhere it's used), change its kind or colour, see how many projects have it, jump to them, or delete it.
+- **New Songs tab** under Ableton: every song with its master, its newest bounce and its stems in one row. Play them from there, search, filter by tag, or open the newest set in Live.
+- **Projects that use files from outside their folder, or have missing files, no longer move** unless you say so. Mac Cleaner reads the project's sets at the moment of the move, and skips it with a message saying why. That covers every way of moving: Catch-alls, Explore, Ableton and the Plan preview. Undo always works.
+  - **Archive as broken**: for old projects too broken to fix. Click it in Collect All or in a project's details. Marked projects get their own box, with **Move to Broken Projects**, which puts them all in one folder you won't look at often, as one batch you can undo. Nothing inside them changes.
+  - **Old and broken projects in one go**: Collect All lists the projects not saved in over 2 years whose newest set misses files. **Review and mark as broken** shows them with a tick box each, so you can mark them all at once.
+  - **Allow moving anyway**, in a project's details: for a project that isn't broken but you want to move anyway.
+  - All projects has a **Broken** filter. Marked projects no longer count towards Collect All.
+  - **Old versions don't hold a project back.** A project may move once its *newest* set is self-contained, even if older versions in the same folder were never collected. Collect All marks these “Safe to move”.
+  - **Samples from your User Library and Splice folder don't hold a project back either.** They stay where they are when the project moves, so the set still finds them.
+- **Find missing samples**: **Find missing** in Collect All looks for a project's missing files by name everywhere on this Mac. It tells you which folder to point Live's search at (File → Manage Files → Manage Set → Locate), step by step, and which files are gone for good, like ones that were in Google Drive, on a drive that isn't connected, or on an older Mac.
+- **Stems you were sent are told apart from stems you exported.** Stems a project uses as samples, or that are older than the project, are “Received”: the Plan files them in the project's Samples/Received Stems, and they don't count as the project's own stems in its checklist.
+- **Copies of stems you've already filed**: when every file in a stems folder is already in a project (the same names and sizes, checked byte for byte when they're on this Mac), the Plan suggests the Trash for the copy. It never starts ticked.
+- **Older bounces are kept apart**: the newest version of a song's bounce goes to Exports/Bounces and older versions to Exports/Bounces/Older versions.
+- **Files only in iCloud**: with Optimise Mac Storage on, macOS removes files you haven't opened lately from this Mac when it needs space, and Live then has to download them when you open a set (offline they show up as missing).
+  - The Overview has a new **Only in iCloud** card: how much isn't on this Mac and where (folders with audio first), and which folders are kept downloaded.
+  - **Keep Downloaded** on any of those folders, or on a project: the same setting as Finder's right-click → Keep Downloaded. macOS downloads it all and never removes it again. Click **Stop keeping** to undo it.
+  - **Download now** fetches the files once, in the background, with progress and a Stop button. It won't fill your disk: it says so if there isn't room. Important has **Download** for all your starred projects at once, for before a gig or a flight.
+  - Projects with files only in iCloud get a ☁︎ iCloud only label, an **Only in iCloud** filter in All projects, and both buttons in their details. Projects inside a kept folder say so.
+- **Other apps' files stay put**: tracks in your rekordbox collection and media your Final Cut libraries link to are protected like files Ableton sets use, so moving them won't make them go missing there. For rekordbox, export the collection (File → Export Collection in xml format) and choose that file under Rules.
+- **A copy of Mac Cleaner's own data lives in your library**: once your library is set up, your tags, marks, saved plans and settings are copied to its Mac Cleaner data folder after each change, so they go wherever your files go. On a new Mac, the Overview offers to bring them back.
+- **Your User Library is no longer listed as a project**, and the sets inside it (templates) and inside Factory Packs (demo sets) no longer show up as “sets outside a project folder”.
+
 ## 0.9.1
 
 - **Fixed: updating could put you back on an older version.** Mac Cleaner keeps a backup copy of the version before, so you can roll back. If that backup was opened instead of the app (for example from Spotlight) and you clicked Update, the old version ended up back in place. The backup copy now refuses to update and tells you to open Mac Cleaner from your Applications folder.

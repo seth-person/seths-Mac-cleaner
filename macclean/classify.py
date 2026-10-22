@@ -92,8 +92,14 @@ def classify_file(path: str) -> str:
     return cat
 
 
+# Live's User Library has an "Ableton Project Info" folder too, but it's a library
+# of presets and samples, not a project. Live always calls it "User Library".
+USER_LIBRARY_NAME = "user library"
+
+
 def is_ableton_project(path: str) -> bool:
-    return os.path.isdir(os.path.join(path, "Ableton Project Info"))
+    return os.path.isdir(os.path.join(path, "Ableton Project Info")) \
+        and os.path.basename(os.path.normpath(path)).casefold() != USER_LIBRARY_NAME
 
 
 def human(n: float) -> str:

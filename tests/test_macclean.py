@@ -13,6 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import guard  # noqa: E402,F401  (first: keeps the tests off this Mac's apps and Keychain)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fixture  # noqa: E402
 
