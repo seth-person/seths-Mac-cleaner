@@ -290,15 +290,42 @@ function renderScan() {
 }
 
 // ------------------------------------------------------------------ router
+// Going to another tab starts at the top. Redrawing the page you're on (after a
+// button, a tag, a finished scan) keeps the old page up until the new one is
+// ready, then puts you back where you were, with the same rows open.
 const VIEWS = {};
+let lastRoute = null;
+function openKeys(root) {
+  return new Set([...root.querySelectorAll("[data-key]")]
+    .filter((el) => (el.tagName === "DETAILS" ? el.open : !el.hidden)).map((el) => el.dataset.key));
+}
+function reopen(root, keys) {
+  for (const el of root.querySelectorAll("[data-key]")) {
+    if (!keys.has(el.dataset.key)) continue;
+    if (el.tagName === "DETAILS") el.open = true;
+    else if (el._open) el._open();
+    else el.hidden = false;
+  }
+}
 function route() {
   const view = (location.hash || "#overview").slice(1).split("?")[0];
+  const key = `${location.hash}|${musicTab}`;
+  const same = key === lastRoute;
+  lastRoute = key;
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   actionbar.clear();
   tip.hide();
   const root = $("#view");
-  root.replaceChildren(h("p", { class: "muted" }, "Loading…"));
-  (VIEWS[view] || VIEWS.overview)(root).catch((e) => {
+  const keep = same ? { y: window.scrollY, open: openKeys(root) } : null;
+  if (!keep) {
+    root.replaceChildren(h("p", { class: "muted" }, "Loading…"));
+    window.scrollTo(0, 0);
+  }
+  (VIEWS[view] || VIEWS.overview)(root).then(() => {
+    if (!keep) return;
+    reopen(root, keep.open);
+    requestAnimationFrame(() => window.scrollTo(0, keep.y));
+  }).catch((e) => {
     root.replaceChildren(h("div", { class: "empty" }, h("h2", {}, "Something went wrong"), h("p", {}, e.message)));
   });
 }
@@ -1107,9 +1134,64 @@ async function tagMany(projects) {
   route();
 }
 function tagCell(p) {
-  return h("span", { class: "tag-cell" }, (p.tags || []).map((t) => tagChip(t, { on: tagFilter.has(t), onclick: (e) => {
+  const cell = h("span", { class: "tag-cell" });
+  const draw = () => cell.replaceChildren(...(p.tags || []).map((t) => tagChip(t, { on: tagFilter.has(t), onclick: (e) => {
     e.stopPropagation(); if (tagFilter.has(t)) tagFilter.delete(t); else tagFilter.add(t); route(); } })),
-  h("button", { class: "btn small", title: "Add or remove tags", onclick: (e) => { e.stopPropagation(); editTags(p); } }, (p.tags || []).length ? "Edit" : "+ Tag"));
+  h("button", { class: "btn small", title: "Add or remove tags", onclick: (e) => { e.stopPropagation(); editTags(p, draw); } }, (p.tags || []).length ? "Edit" : "+ Tag"));
+  draw();
+  return cell;
+}
+
+// Tick every project that should have one tag: search, tick what's shown, save once.
+function tagPicker(d, projects) {
+  const all = [...projects].sort((a, b) => projName(a).localeCompare(projName(b), undefined, { numeric: true, sensitivity: "base" }));
+  const had = new Set(all.filter((p) => (p.tags || []).includes(d.name)).map((p) => p.path));
+  const want = new Set(had);
+  let show = "all", q = "";
+  const list = h("div", { class: "tag-pick-list", role: "group", "aria-label": `Projects for ${d.name}` });
+  const summary = h("span", { class: "ink2" });
+  const saveBtn = h("button", { class: "btn primary", disabled: true }, "Save");
+  const shown = () => all.filter((p) => (show === "all" || (show === "with") === want.has(p.path))
+    && (!q || [p.name, p.parent, ...(p.tags || [])].join("\n").toLowerCase().includes(q)));
+  const update = () => {
+    const add = [...want].filter((x) => !had.has(x)).length, off = [...had].filter((x) => !want.has(x)).length;
+    summary.textContent = `${want.size} project${want.size === 1 ? "" : "s"} ticked` + (add || off ? ` (${[add ? `+${add}` : "", off ? `−${off}` : ""].filter(Boolean).join(", ")} not saved yet)` : "");
+    saveBtn.disabled = !add && !off;
+  };
+  const draw = () => {
+    const rows = shown();
+    list.replaceChildren(...rows.slice(0, 600).map((p) => {
+      const cb = h("input", { type: "checkbox", checked: want.has(p.path), onchange: () => { if (cb.checked) want.add(p.path); else want.delete(p.path); update(); } });
+      return h("label", { class: "tag-pick-row" }, cb,
+        h("span", { class: "trunc", title: p.path }, h("b", {}, projName(p)), " ", h("span", { class: "muted" }, pretty(p.parent))),
+        h("span", { class: "tag-cell" }, (p.tags || []).filter((t) => t !== d.name).map((t) => tagChip(t))));
+    }), rows.length ? null : h("div", { class: "muted" }, "No projects match."),
+    rows.length > 600 ? h("div", { class: "muted" }, `Showing 600 of ${rows.length}. Search to narrow it down.`) : null);
+    update();
+  };
+  let timer = null;
+  const search = h("input", { type: "search", placeholder: "Search projects", "aria-label": `Search projects for ${d.name}`,
+    oninput: () => { clearTimeout(timer); timer = setTimeout(() => { q = search.value.trim().toLowerCase(); draw(); }, 150); } });
+  const seg = h("div", { class: "seg" }, [["all", "All"], ["with", "Ticked"], ["without", "Not ticked"]].map(([k, l]) =>
+    h("button", { class: k === show ? "on" : "", onclick: (e) => { show = k; [...seg.children].forEach((b) => b.classList.toggle("on", b === e.currentTarget)); draw(); } }, l)));
+  const tickShown = (on) => { for (const p of shown()) { if (on) want.add(p.path); else want.delete(p.path); } draw(); };
+  saveBtn.addEventListener("click", async () => {
+    const add = [...want].filter((x) => !had.has(x)), off = [...had].filter((x) => !want.has(x));
+    const r = await post("/api/ableton/tags", { paths: add, add: [d.name], remove_from: off, remove: [d.name] });
+    if (!r.ok) return toast(r.error);
+    for (const p of all) {
+      if (add.includes(p.path)) p.tags = [...(p.tags || []), d.name];
+      if (off.includes(p.path)) p.tags = (p.tags || []).filter((t) => t !== d.name);
+    }
+    toast(`“${d.name}”: ${[add.length ? `added to ${add.length}` : "", off.length ? `taken off ${off.length}` : ""].filter(Boolean).join(", ")}.`);
+    route();
+  });
+  draw();
+  return h("div", { class: "tag-pick-panel" },
+    h("div", { class: "toolbar" }, search, seg,
+      h("button", { class: "btn small", onclick: () => tickShown(true) }, "Tick all shown"),
+      h("button", { class: "btn small", onclick: () => tickShown(false) }, "Untick all shown")),
+    list, h("div", { class: "toolbar", style: { marginTop: "8px" } }, summary, h("span", { class: "spacer" }), saveBtn));
 }
 
 async function tagsView(root, data, head) {
@@ -1130,17 +1212,21 @@ async function tagsView(root, data, head) {
       const colour = h("select", { "aria-label": "Colour", onchange: () => change({ op: "update", name: d.name, color: Number(colour.value) }) },
         [1, 2, 3, 4, 5, 6, 7, 8].map((c) => h("option", { value: c, selected: c === d.color }, ["Blue", "Orange", "Green", "Amber", "Pink", "Dark green", "Purple", "Red"][c - 1])));
       const n = counts.get(d.name) || 0;
-      return h("tr", {},
+      const pick = h("tr", { class: "detail-row", hidden: true, "data-key": "tagpick:" + d.name },
+        h("td", { colspan: 6 }, tagPicker(d, data.projects)));
+      return [h("tr", {},
         h("td", { style: { width: "1%" } }, tagChip(d.name)),
         h("td", {}, nameIn), h("td", {}, kindIn), h("td", {}, colour),
         h("td", { class: "num ink2" }, `${n} project${n === 1 ? "" : "s"}`),
         h("td", { style: { width: "1%", whiteSpace: "nowrap" } },
+          h("button", { class: "btn small primary", "aria-expanded": "false", title: "Tick the projects that should have this tag",
+            onclick: (e) => { pick.hidden = !pick.hidden; e.currentTarget.setAttribute("aria-expanded", String(!pick.hidden)); } }, "Projects…"), " ",
           h("button", { class: "btn small", disabled: !n, onclick: () => { tagFilter.clear(); tagFilter.add(d.name); openTab("projects"); } }, "Show projects"), " ",
           h("button", { class: "btn small", onclick: async () => {
             const ok = await modal(`Delete the tag “${d.name}”?`, h("p", {}, `It's removed from ${n} project${n === 1 ? "" : "s"}. The projects themselves aren't touched.`),
               [{ label: "Cancel", value: false }, { label: "Delete tag", value: true, cls: "danger" }]);
             if (ok) change({ op: "delete", name: d.name }, "Tag deleted.");
-          } }, "Delete")));
+          } }, "Delete"))), pick];
     })))));
   const nameIn = h("input", { type: "text", id: "tags-new-name", placeholder: "New tag name", maxlength: 40 });
   const kindIn = h("input", { type: "text", id: "tags-new-kind", list: "tag-kinds-view", value: "Album / EP", style: { width: "140px" }, "aria-label": "Kind" });
@@ -1256,14 +1342,15 @@ async function listenPanel(s, panel) {
 
 function listenControls(s) {
   const b = (s.bounces || [])[0];
-  const panel = h("div", { class: "listen-panel", hidden: true });
+  const panel = h("div", { class: "listen-panel", hidden: true, "data-key": "listen:" + s.path });
+  const show = (on) => {
+    panel.hidden = !on;
+    toggle.setAttribute("aria-expanded", String(on));
+    if (on && !panel.dataset.loaded) { panel.dataset.loaded = "1"; listenPanel(s, panel); }
+  };
+  panel._open = () => show(true);
   const toggle = h("button", { class: "btn small", "aria-expanded": "false", title: "Exports of this song, and the audio files the set uses",
-    onclick: (e) => {
-      e.stopPropagation();
-      panel.hidden = !panel.hidden;
-      toggle.setAttribute("aria-expanded", String(!panel.hidden));
-      if (!panel.hidden && !panel.dataset.loaded) { panel.dataset.loaded = "1"; listenPanel(s, panel); }
-    } }, "What's in it");
+    onclick: (e) => { e.stopPropagation(); show(panel.hidden); } }, "What's in it");
   const bounce = b ? playButton(b.path, stem(b.name), `Play the newest export: ${pretty(b.path)}`)
     : h("span", { class: "muted", title: "No exported audio with this set's name was found" }, "no bounce yet");
   return { bounce, toggle, panel };
@@ -1300,7 +1387,7 @@ function projectTable(projects, cols) {
   return h("table", {}, h("thead", {}, h("tr", {}, h("th", { class: "check" }), h("th", {}, "Project"),
     cols.map((c) => h("th", { class: c.num ? "num" : "" }, c.label)), h("th", {}))),
   h("tbody", {}, projects.map((p) => {
-    const detail = h("tr", { class: "detail-row", hidden: true }, h("td", {}), h("td", { colspan: cols.length + 2 }, projectDetail(p)));
+    const detail = h("tr", { class: "detail-row", hidden: true, "data-key": "detail:" + p.path }, h("td", {}), h("td", { colspan: cols.length + 2 }, projectDetail(p)));
     return [h("tr", { class: p.sets.length ? "has-sets" : "" },
       h("td", { class: "check" }, starButton(p)),
       h("td", { class: "name rowlink", onclick: () => (detail.hidden = !detail.hidden) },
@@ -1663,7 +1750,7 @@ async function packsView(root) {
   const tbody = h("tbody", {});
   for (const p of packs) {
     const n = p.sets.length + p.presets.length;
-    const detail = h("tr", { class: "detail-row", hidden: true }, h("td", { colspan: 5 },
+    const detail = h("tr", { class: "detail-row", hidden: true, "data-key": "pack:" + (p.path || p.name) }, h("td", { colspan: 5 },
       p.sets.length ? h("div", {}, h("b", {}, "Sets: "), p.sets.map(pretty).join(" · ")) : null,
       p.presets.length ? h("div", {}, h("b", {}, "Presets and racks: "), p.presets.map(pretty).join(" · ")) : null));
     const usedBy = n ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); detail.hidden = !detail.hidden; } },
@@ -1766,7 +1853,7 @@ VIEWS.music = async (root) => {
       data.buckets.map((b) => h("option", { value: b, selected: b === target.get(p.path) }, b)));
     const where = p.in_library ? h("span", { class: "chip" }, p.bucket ? "Projects · " + p.bucket : "Projects · unsorted")
       : h("span", { class: "trunc ink2", title: p.parent }, pretty(p.parent));
-    const detail = h("tr", { class: "detail-row", hidden: true }, h("td", {}), h("td", {}), h("td", { colspan: 9 }, projectDetail(p)));
+    const detail = h("tr", { class: "detail-row", hidden: true, "data-key": "detail:" + p.path }, h("td", {}), h("td", {}), h("td", { colspan: 9 }, projectDetail(p)));
     const nameCell = h("td", { class: "name rowlink", style: { minWidth: "200px" }, onclick: () => (detail.hidden = !detail.hidden) },
       h("span", { class: "trunc", style: { color: "var(--accent)" } }, p.name.replace(/ Project$/, "")),
       p.possible_copies.length ? h("span", { class: "status warning" }, h("span", { class: "dot" }), `${p.possible_copies.length} possible cop${p.possible_copies.length > 1 ? "ies" : "y"}`) : null,
@@ -2009,10 +2096,40 @@ function cloudDetail(p) {
       h("span", { class: "muted" }, "Keep Downloaded keeps it on this Mac for good.")));
 }
 
+// Rename a project folder, and the set named after it, as one batch you can undo.
+async function renameProject(p) {
+  const old = projName(p);
+  const named = p.sets.find((s) => setName(s.path) === old && s.path.slice(0, s.path.lastIndexOf("/")) === p.path);
+  const nameIn = h("input", { type: "text", id: "rename-project", value: old, maxlength: 200, style: { width: "100%" }, "aria-label": "New name" });
+  const setBox = named ? h("input", { type: "checkbox", id: "rename-set", checked: true }) : null;
+  const body = h("div", {},
+    h("p", {}, "New name for ", h("b", {}, old), ":"), nameIn,
+    named ? h("label", { style: { display: "block", marginTop: "8px" } }, setBox, ` Also rename the set “${old}.als”`) : null,
+    h("ul", { class: "ink2" },
+      h("li", {}, "Live finds the project's own samples relative to its folder, so they keep working. Files it uses from elsewhere keep their places."),
+      h("li", {}, "Close Live first. Live's recent list shows the old name until you open the set from its new place."),
+      h("li", {}, "Tags, stars and marks come along. Exports in its Exports folder still belong to it; ones elsewhere named after the old name won't be matched to it any more."),
+      h("li", {}, "Undo puts the old name back (History).")));
+  setTimeout(() => { nameIn.focus(); nameIn.select(); }, 0);
+  nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); nameIn.closest(".modal, dialog, [role=dialog]")?.querySelector(".primary")?.click(); } });
+  const ok = await modal(`Rename ${old}`, body, [{ label: "Cancel", value: false }, { label: "Rename", value: true, cls: "primary" }]);
+  const name = nameIn.value.trim();
+  if (!ok || !name || name === old) return;
+  const r = await post("/api/ableton/rename", { path: p.path, name, set_too: !!(setBox && setBox.checked) });
+  if (!r.ok) return toast(r.error, 8000);
+  toastAction(`Renamed to ${name}.` + (r.pinned.length ? " It was pinned in Live's browser: pin it again there." : ""), "Undo", async () => {
+    const u = await post("/api/undo-batch", { id: r.batch });
+    toast(u.ok === false ? u.error : u.failed && u.failed.length ? `Couldn't undo it all: ${u.failed[0].error}` : `${name} is called ${old} again.`, 8000);
+    route();
+  }, 10000);
+  route();
+}
+
 function projectDetail(p) {
   return h("div", { class: "stack" }, cloudDetail(p), organisingDetail(p),
     h("div", { class: "kv" },
-      h("span", { class: "muted" }, "Path"), h("span", {}, pretty(p.path), " ", h("button", { class: "btn small", onclick: () => reveal(p.path) }, "Show")),
+      h("span", { class: "muted" }, "Path"), h("span", {}, pretty(p.path), " ", h("button", { class: "btn small", onclick: () => reveal(p.path) }, "Show"),
+        " ", h("button", { class: "btn small", title: "Give the project a new name without breaking it", onclick: () => renameProject(p) }, "Rename…")),
       h("span", { class: "muted" }, "Files"), h("span", {}, `${fmt.count(p.files)} · ${fmt.size(p.alloc)} on this Mac (${fmt.size(p.size)} total)`),
       h("span", { class: "muted" }, "Backups"), h("span", {}, `${p.backup_sets} auto-saved versions, ${fmt.size(p.backup_bytes)}`),
       p.possible_copies.length ? [h("span", { class: "muted" }, "Same name"), h("span", {}, p.possible_copies.map(pretty).join(" · "))] : null),
@@ -2105,7 +2222,7 @@ VIEWS.rules = async (root) => {
       h("p", { class: "ink2" }, `Desktop counts as your active workspace: its items are left alone until untouched for ${cfg.stale_days} days. `,
         "Anything an Ableton set or preset uses is always kept where it is, whatever the rules say.")),
     appsCard(),
-    h("details", { class: "card" },
+    h("details", { class: "card", "data-key": "rules-text" },
       h("summary", {}, "Advanced: edit the rules as text"),
       h("p", { class: "ink2" }, "Destinations can use {cloud} {ableton} {year} {month} {category}. ",
         "Settings file: ", h("span", { class: "mono" }, short(data.path))),

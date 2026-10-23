@@ -506,6 +506,27 @@ class TagTests(Organise):
         for d in marks.tag_defs():
             marks.delete_tag(d["name"])
 
+    def test_tick_many_projects_for_one_tag(self):
+        marks.create_tag("Forever", "Album / EP")
+        marks.create_tag("Remix", "Type")
+        a, b = str(self.songz), str(self.loose)
+        marks.set_tags(a, ["Remix"])
+        # A project moved in Finder keeps its tags under its folder name: adding one must keep them.
+        moved = str(self.tidy)
+        data = marks.load()
+        data["tags"]["/somewhere/old/Tidy Project"] = {"name": "Tidy Project", "tags": ["Remix"]}
+        marks._save(data)
+        r = server.post_ableton_tags({"paths": [a, b, moved], "add": ["forever"]})
+        self.assertEqual(r["tags"], ["Forever"])
+        by_path = marks.tags_lookup()[0]
+        self.assertEqual((by_path[a], by_path[b], by_path[moved]), (["Remix", "Forever"], ["Forever"], ["Remix", "Forever"]))
+        self.assertNotIn("/somewhere/old/Tidy Project", by_path)
+        r = server.post_ableton_tags({"paths": [], "add": ["Forever"], "remove_from": [a, b], "remove": ["Forever"]})
+        self.assertTrue(r["ok"])
+        by_path = marks.tags_lookup()[0]
+        self.assertEqual((by_path[a], by_path.get(b), by_path[moved]), (["Remix"], None, ["Remix", "Forever"]))
+        self.assertFalse(server.post_ableton_tags({"paths": [], "remove_from": []})["ok"])
+
     def test_create_and_refuse_duplicates(self):
         t = marks.create_tag("Forever", "Album / EP")
         self.assertEqual((t["name"], t["kind"]), ("Forever", "Album / EP"))
@@ -933,6 +954,41 @@ class DataCopyTests(Organise):
         self.assertEqual(marks.load()["tags"][str(self.songz)]["tags"], ["Forever"])  # under this Mac's home folder
         self.assertTrue(config.load_config()["library_ready"])
         self.assertFalse(server.post_data_copy_restore({"path": str(self.home)})["ok"])
+
+
+class RenameTests(Organise):
+    def test_rename_project_and_its_set_then_undo(self):
+        old = self.songz
+        marks.set_tags(str(old), [marks.create_tag("Rename Test", "Type")["name"]])
+        r = server.post_ableton_rename({"path": str(old), "name": "Song Zed", "set_too": True})
+        self.assertTrue(r["ok"], r)
+        new = old.with_name("Song Zed Project")
+        self.assertEqual(r["path"], str(new))
+        self.assertTrue((new / "Song Zed.als").is_file() and not old.exists())
+        self.assertEqual(marks.tags_lookup()[0].get(str(new)), ["Rename Test"])
+        # The scan follows, so the dashboard shows the new name straight away.
+        names = {p["name"] for p in server.api_ableton({})["projects"]}
+        self.assertIn("Song Zed Project", names)
+        self.assertNotIn("Song Z Project", names)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM ableton_sets WHERE path=?", (str(new / "Song Zed.als"),)).fetchone()[0], 1)
+        u = server.post_undo_batch({"id": r["batch"]})
+        self.assertEqual((u["undone"], u["failed"]), (2, []))
+        self.assertTrue((old / "Song Z.als").is_file() and not new.exists())
+        self.assertIn("Song Z Project", {p["name"] for p in server.api_ableton({})["projects"]})
+        self.assertEqual(marks.tags_lookup()[0].get(str(old)), ["Rename Test"])
+
+    def test_refuses_what_would_break(self):
+        for name in ("", ".hidden", "a/b", "x:y"):
+            self.assertFalse(server.post_ableton_rename({"path": str(self.tidy), "name": name})["ok"], name)
+        self.assertIn("already its name", server.post_ableton_rename({"path": str(self.tidy), "name": "Tidy"})["error"])
+        self.assertIn("isn't an Ableton project", server.post_ableton_rename({"path": str(self.home / "Downloads"), "name": "x"})["error"])
+        self.assertIn("already something called", server.post_ableton_rename({"path": str(self.tidy), "name": "Loose Tune"})["error"])
+        safety.app_running = lambda process: process == "Live"
+        try:
+            self.assertIn("Live is open", server.post_ableton_rename({"path": str(self.tidy), "name": "Neat"})["error"])
+        finally:
+            safety.app_running = lambda process: False
+        self.assertTrue(self.tidy.exists())
 
 
 class GuardTests(unittest.TestCase):

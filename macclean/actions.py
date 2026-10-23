@@ -155,6 +155,78 @@ def move(src, dest_dir, cfg: dict | None = None, dry_run: bool = False, note: st
     return entry
 
 
+def _follow_in_scan(old: str, new: str) -> None:
+    """Keep the scan in step with a rename, so the dashboard shows the new name now."""
+    from . import db
+    if not config.db_path().exists():
+        return
+    con = db.connect()
+    try:
+        db.rename_path(con, old, new)
+    finally:
+        con.close()
+
+
+def rename(src, new_name: str, cfg: dict | None = None, batch: str | None = None) -> dict:
+    """Give a file or folder a new name where it is. Logged like a move, so Undo works."""
+    cfg = cfg or config.load_config()
+    src = _check_source(Path(src), cfg)
+    new_name = (new_name or "").strip()
+    if not new_name or new_name.startswith(".") or "/" in new_name or ":" in new_name or len(new_name) > 200:
+        raise ActionError("Choose a name that doesn't contain / or : and doesn't start with a dot")
+    target = src.with_name(new_name)
+    if target.name == src.name:
+        raise ActionError("That's already its name")
+    if os.path.lexists(target) and not os.path.samefile(target, src):  # a change of capitals only is fine
+        raise ActionError(f"There's already something called {new_name} there")
+    _check_now(src, src.parent, cfg)
+
+    def work():
+        os.rename(src, target)
+
+    entry = _journaled({"op": "move", "rename": True, "src": str(src), "dst": str(target),
+                        "note": f"Renamed to {new_name}", "batch": batch}, work)
+    from . import marks
+    marks.moved(str(src), str(target))
+    _follow_in_scan(str(src), str(target))
+    return entry
+
+
+def rename_project(project: str, new_song: str, set_too: bool = False, cfg: dict | None = None) -> dict:
+    """Rename a project folder ("Old Project" -> "New Project") and, if asked, the set
+    named after it ("Old.als" -> "New.als"), as one batch you can undo.
+
+    Live finds a project's own samples relative to the project folder, so renaming
+    the folder doesn't break them, and files outside it keep their own paths."""
+    cfg = cfg or config.load_config()
+    src = Path(os.path.abspath(project))
+    if not (src / "Ableton Project Info").is_dir():
+        raise ActionError(f"{src.name} isn't an Ableton project")
+    new_song = (new_song or "").strip()
+    if new_song.lower().endswith(" project"):
+        new_song = new_song[: -len(" project")].rstrip()
+    if not new_song:
+        raise ActionError("Type the new name")
+    old_song = src.name[: -len(" Project")] if src.name.endswith(" Project") else src.name
+    folder = new_song + (" Project" if src.name.endswith(" Project") else "")
+    the_set = src / f"{old_song}.als"
+    set_too = set_too and the_set.is_file() and new_song != old_song
+    planned = ([{"path": str(the_set), "action": "rename", "dest": f"{new_song}.als", "note": ""}] if set_too else []) \
+        + [{"path": str(src), "action": "rename", "dest": folder, "note": ""}]
+    batch = _log({"op": "batch", "label": f"Renamed {old_song} to {new_song}", "items": planned})["id"]
+    done = []
+    try:
+        if set_too:  # the set first, while its folder still has the old name
+            done.append(rename(the_set, f"{new_song}.als", cfg, batch))
+        if folder != src.name:
+            done.append(rename(src, folder, cfg, batch))
+    finally:
+        _log({"op": "batch-end", "batch": batch, "done": len(done)})
+    if not done:
+        raise ActionError("That's already its name")
+    return {"batch": batch, "path": done[-1]["dst"] if folder != src.name else str(src), "renamed": len(done)}
+
+
 def trash(src, cfg: dict | None = None, dry_run: bool = False, note: str = "", batch: str | None = None) -> dict:
     cfg = cfg or config.load_config()
     src = _check_source(Path(src), cfg)
@@ -289,7 +361,7 @@ def undo(action_id: str) -> dict:
     src, dst = entry["src"], entry["dst"]
     if not os.path.lexists(dst):
         raise ActionError(f"{dst} isn't there any more (Trash emptied, or moved again?)")
-    if os.path.lexists(src):
+    if os.path.lexists(src) and not os.path.samefile(src, dst):  # a change of capitals only is fine
         raise ActionError(f"Something already exists at {src}")
     _check_now(Path(dst), Path(os.path.dirname(src)), cfg)
     with _lock:
@@ -298,6 +370,8 @@ def undo(action_id: str) -> dict:
         logged = _log({"op": "undo", "undoes": action_id, "src": dst, "dst": src})
     from . import marks
     marks.moved(dst, src)
+    if entry.get("rename"):
+        _follow_in_scan(dst, src)
     return logged
 
 
@@ -321,6 +395,8 @@ def undo_batch(batch_id: str) -> dict:
 def _one(it: dict, cfg: dict, dry_run: bool, batch: str | None) -> dict:
     if it.get("action") == "trash":
         return trash(it["path"], cfg, dry_run, it.get("note", ""), batch)
+    if it.get("action") == "rename":  # finishing an interrupted rename: dest is the new name
+        return rename(it["path"], it.get("dest") or "", cfg, batch)
     if it.get("action") == "move":
         if not it.get("dest"):
             raise ActionError("No destination chosen")

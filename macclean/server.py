@@ -192,14 +192,41 @@ def api_ableton(q):
     return {"has_scan": True, **data}
 
 
-def post_ableton_tags(body):
-    """{path, tags} replaces one project's tags; {paths, add} adds tags to several."""
+def post_ableton_rename(body):
+    """{path, name, set_too}: rename a project (and the set named after it)."""
+    path = str(body.get("path") or "")
+    if not os.path.isabs(path):
+        return {"ok": False, "error": "Pick a project"}
+    if not os.path.isdir(os.path.join(path, "Ableton Project Info")):
+        return {"ok": False, "error": f"{os.path.basename(path)} isn't an Ableton project"}
+    con = _con()
+    users = safety.UsedIndex(con, config.load_config()).users(path) if con is not None else []
+    if users:
+        who = safety.describe_users(users)
+        return {"ok": False, "error": f"{who} {'uses' if len(users) == 1 else 'use'} files in it, so renaming it would lose them "
+                                      "there. It keeps its name; Collect All and Save those sets first."}
+    real = os.path.realpath(path)
+    pinned = [p for p in live_prefs.pinned_folders() if os.path.realpath(p) == real or os.path.realpath(p).startswith(real + os.sep)]
     try:
-        if isinstance(body.get("paths"), list):
-            paths = [p for p in body["paths"] if isinstance(p, str) and os.path.isabs(p)]
-            if not paths:
+        r = actions.rename_project(path, str(body.get("name") or ""), bool(body.get("set_too")))
+    except (actions.ActionError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, **r, "pinned": pinned}
+
+
+def post_ableton_tags(body):
+    """{path, tags} replaces one project's tags; {paths, add} adds tags to several,
+    and {remove_from, remove} takes tags off several (both may come in one request)."""
+    try:
+        if isinstance(body.get("paths"), list) or isinstance(body.get("remove_from"), list):
+            paths = [p for p in body.get("paths") or [] if isinstance(p, str) and os.path.isabs(p)]
+            off = [p for p in body.get("remove_from") or [] if isinstance(p, str) and os.path.isabs(p)]
+            if not paths and not off:
                 return {"ok": False, "error": "Pick some projects"}
-            return {"ok": True, "tags": marks.add_tags(paths, body.get("add") or [])}
+            tags = marks.add_tags(paths, body.get("add") or []) if paths else []
+            if off:
+                marks.remove_tags(off, body.get("remove") or [])
+            return {"ok": True, "tags": tags}
         if not isinstance(body.get("path"), str) or not os.path.isabs(body["path"]):
             return {"ok": False, "error": "Pick a project"}
         return {"ok": True, "tags": marks.set_tags(body["path"], body.get("tags") or [])}
@@ -525,7 +552,7 @@ POST = {"/api/scan": post_scan, "/api/scan/cancel": post_cancel, "/api/apply": p
         "/api/undo": post_undo, "/api/undo-batch": post_undo_batch, "/api/resume-batch": post_resume_batch, "/api/config": post_config, "/api/reveal": post_reveal, "/api/open-trash": post_open_trash,
         "/api/ableton/mark": post_ableton_mark, "/api/ableton/recheck": post_ableton_recheck,
         "/api/ableton/open": post_ableton_open, "/api/ableton/flag": post_ableton_flag,
-        "/api/ableton/tags": post_ableton_tags, "/api/tag": post_tag,
+        "/api/ableton/tags": post_ableton_tags, "/api/ableton/rename": post_ableton_rename, "/api/tag": post_tag,
         "/api/plan/save": post_plan_save, "/api/plan/preview": post_plan_preview, "/api/library": post_library, "/api/links": post_links,
         "/api/data-copy/restore": post_data_copy_restore, "/api/icloud/keep": post_icloud_keep,
         "/api/icloud/download": post_icloud_download, "/api/icloud/cancel": post_icloud_cancel,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import time
 from pathlib import Path
 
 from . import config
@@ -51,6 +53,25 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 
 def has_scan() -> bool:
     return config.db_path().exists()
+
+
+# Every column that holds a path, for rename_path().
+PATH_COLUMNS = (("dirs", "path"), ("dirs", "parent"), ("files", "path"), ("files", "parent"),
+                ("ableton_sets", "path"), ("ableton_sets", "project"), ("ableton_presets", "path"),
+                ("ableton_presets", "project"), ("ableton_refs", "set_path"), ("ableton_refs", "ref_path"),
+                ("ableton_tracks", "set_path"), ("ableton_pack_refs", "user_path"), ("dupes", "path"))
+
+
+def rename_path(con: sqlite3.Connection, old: str, new: str) -> None:
+    """Update the scan after Mac Cleaner renamed `old` (a file or folder) to `new`."""
+    n = len(old)
+    for table, col in PATH_COLUMNS:
+        con.execute(f"UPDATE {table} SET {col} = ? || substr({col}, ?) WHERE {col} = ? OR substr({col}, 1, ?) = ?",
+                    (new, n + 1, old, n + 1, old + "/"))
+    for table in ("dirs", "files"):
+        con.execute(f"UPDATE {table} SET name = ? WHERE path = ?", (os.path.basename(new), new))
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('edited_at', ?)", (str(time.time()),))  # refreshes cached views
+    con.commit()
 
 
 def meta(con: sqlite3.Connection) -> dict:

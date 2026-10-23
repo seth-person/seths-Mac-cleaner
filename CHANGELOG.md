@@ -2,6 +2,17 @@
 
 Each `## <version>` section becomes the release notes shown in the app's Update dialog.
 
+## 0.10.1
+
+- **No more jumping back to the top.** Tagging a project, starring it, marking it broken, Keep Downloaded, Re-check and the other buttons now keep you where you were on the page, with the same projects still open. The old page stays up while the new one loads. Changing a project's tags redraws just that project. A finished scan no longer moves you either.
+- **Tick many projects for one tag**: in Ableton → Tags, click **Projects…** next to a tag. You get a scrolling list of every project with a search box. Tick or untick projects, or search (say “remix”) and use **Tick all shown**, then **Save** once. **Ticked** and **Not ticked** show only those, so it's easy to check what an album or tag includes.
+- **Rename a project without breaking it**: **Rename…** in a project's details (next to its path). It renames the project folder and, if you like, the set named after it (“Old.als” → “New.als”), as one change with **Undo** right there and in History.
+  - Live finds a project's own samples relative to its folder, so they keep working; files it uses from elsewhere keep their places.
+  - It won't rename while Live is open, or when sets elsewhere use files inside the project (those would lose them).
+  - Tags, stars and marks come along, and the dashboard shows the new name straight away, without a rescan.
+  - Exports in a project's Exports folder now always count as its exports, whatever they're called, so a renamed project keeps its masters and bounces in Songs.
+- Adding a tag to a project you'd moved yourself in Finder no longer drops the tags it already had.
+
 ## 0.10.0
 
 **Rescan once after updating.** Mac Cleaner now reads every audio file and each set's track names, which the new stems, songs and missing-sample features need.

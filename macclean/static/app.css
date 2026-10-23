@@ -258,3 +258,9 @@ table.rules tr.off td { opacity: .55; }
 .tag-bar input[type=search] { min-width: 220px; }
 .tag-pick { display: grid; gap: 10px; max-height: 50vh; overflow: auto; }
 .tag-pick label { display: inline-flex; align-items: center; gap: 4px; margin: 0 10px 4px 0; }
+.tag-pick-panel { padding: 8px 0 4px; }
+.tag-pick-list { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
+.tag-pick-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
+  padding: 6px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.tag-pick-row:last-child { border-bottom: 0; }
+.tag-pick-row:hover { background: var(--surface-2); }

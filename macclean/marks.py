@@ -211,6 +211,16 @@ def set_tags(path: str, names: list) -> list:
         return tags
 
 
+def _entry(tagged: dict, path: str) -> dict:
+    """A project's tag entry, taking over one kept under its folder name (moved in Finder)."""
+    if path not in tagged:
+        name = os.path.basename(path)
+        old = next((k for k, v in tagged.items() if (v.get("name") or os.path.basename(k)) == name
+                    and not os.path.exists(k)), None)
+        tagged[path] = tagged.pop(old) if old else {"name": name, "tags": []}
+    return tagged[path]
+
+
 def add_tags(paths: list, names: list) -> list:
     """Add tags to several projects at once (their other tags stay)."""
     with _lock:
@@ -219,10 +229,25 @@ def add_tags(paths: list, names: list) -> list:
         tags = _resolve(defs, names)
         tagged = data.setdefault("tags", {})
         for p in paths:
-            cur = tagged.setdefault(p, {"name": os.path.basename(p), "tags": []})
+            cur = _entry(tagged, p)
             cur["tags"] += [t for t in tags if t not in cur["tags"]]
         _save(data)
         return tags
+
+
+def remove_tags(paths: list, names: list) -> list:
+    """Take tags off several projects at once (their other tags stay)."""
+    with _lock:
+        data = load()
+        gone = {n.casefold() for n in names if isinstance(n, str)}
+        tagged = data.setdefault("tags", {})
+        for p in paths:
+            cur = _entry(tagged, p)
+            cur["tags"] = [t for t in cur["tags"] if t.casefold() not in gone]
+            if not cur["tags"]:
+                tagged.pop(p, None)
+        _save(data)
+        return sorted(gone)
 
 
 def tags_lookup() -> tuple:

@@ -49,6 +49,7 @@ def song_key(name: str) -> tuple:
 
 
 _index_cache = {}
+_exports_cache = {}
 
 
 def _bounce_index(con) -> dict:
@@ -56,7 +57,9 @@ def _bounce_index(con) -> dict:
     key = tuple(sorted(db.meta(con).items()))
     if key in _index_cache:
         return _index_cache[key]
-    idx = defaultdict(list)
+    from . import config
+    marker = "/" + ((config.load_config().get("layout") or {}).get("exports") or "Exports") + "/"
+    idx, in_exports = defaultdict(list), defaultdict(list)
     for r in con.execute("SELECT path, name, ext, size, mtime, dataless FROM files WHERE category='audio'"):
         if r["ext"] not in PLAYABLE:
             continue
@@ -64,23 +67,38 @@ def _bounce_index(con) -> dict:
         if "/Samples/" in p or "/Backup/" in p or "/.Trash/" in p or safety.in_sound_library(p):
             continue
         k, version = song_key(r["name"])
-        if len(k) < 2:
-            continue
-        idx[k].append({"path": p, "name": r["name"], "size": r["size"], "mtime": r["mtime"],
-                       "version": version, "icloud_only": bool(r["dataless"])})
+        b = {"path": p, "name": r["name"], "size": r["size"], "mtime": r["mtime"],
+             "version": version, "icloud_only": bool(r["dataless"])}
+        if marker in p and "/Stems/" not in p[p.rfind(marker):]:  # a project's own exports, whatever their name
+            in_exports[p[: p.rfind(marker)]].append(b)
+        if len(k) >= 2:
+            idx[k].append(b)
     _index_cache.clear()
     _index_cache[key] = idx
+    _exports_cache.clear()
+    _exports_cache[key] = in_exports
     return idx
 
 
-def bounces_for(con, set_path: str, project_name: str | None = None, limit: int | None = MAX_BOUNCES) -> list:
+def _project_exports(con) -> dict:
+    """project folder -> the audio in its Exports folder (not the stems)."""
+    _bounce_index(con)
+    return _exports_cache[tuple(sorted(db.meta(con).items()))]
+
+
+def bounces_for(con, set_path: str, project_name: str | None = None, limit: int | None = MAX_BOUNCES,
+                project_path: str | None = None) -> list:
     """Exports of the song a set makes, best match first: the same version
-    number as the set (if it has one), then newest."""
+    number as the set (if it has one), then newest. With project_path, the
+    project's own Exports folder counts too, even after a rename."""
     idx = _bounce_index(con)
     k, version = song_key(set_path)
     found = {b["path"]: b for b in idx.get(k, [])}
     if project_name:
         for b in idx.get(song_key(project_name)[0], []):
+            found.setdefault(b["path"], b)
+    if project_path:
+        for b in _project_exports(con).get(project_path, []):
             found.setdefault(b["path"], b)
     ranked = sorted(found.values(), key=lambda b: (not (version and b["version"] == version), -(b["mtime"] or 0)))
     return ranked[:limit] if limit else ranked
@@ -90,7 +108,8 @@ def attach_bounces(con, projects: list, loose: list) -> None:
     """Add 'bounces' to every set in the Ableton overview."""
     for p in projects:
         for s in p["sets"]:
-            s["bounces"] = bounces_for(con, s["path"], p["name"] if s["path"] == p.get("newest_set") else None)
+            newest = s["path"] == p.get("newest_set")
+            s["bounces"] = bounces_for(con, s["path"], p["name"] if newest else None, project_path=p["path"] if newest else None)
     for s in loose:
         s["bounces"] = bounces_for(con, s["path"])
 
